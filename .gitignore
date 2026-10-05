@@ -1,0 +1,32 @@
+.DS_Store
+
+# NPM
+node_modules/
+
+# Dev
+dev/
+dev_firefox/
+dev_safari/
+
+# Prod
+dist/
+dist_firefox/
+dist_safari/
+builds/
+changelogs/
+assets/shared
+
+# Xcode
+*.xcuserstate
+*.xcuserdatad
+
+.cursorrules
+.env
+context/
+
+# Local debugging notes/logs
+.cursor/debug-*.log
+.cursor/feishu-image-debug-notes.md
+
+# Chrome extension signing key (do not commit)
+keys/
