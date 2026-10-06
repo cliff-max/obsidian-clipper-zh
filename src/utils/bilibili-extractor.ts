@@ -582,7 +582,7 @@ async function fetchBilibiliPlayerData(input: {
 			pageContextPlayerData?.subtitle?.subtitles?.length || 0;
 		if (pageContextSubtitleCount > 0) {
 			return {
-				playerData: pageContextPlayerData,
+				playerData: pageContextPlayerData ?? null,
 				loginEffective: (pageContextPlayerData?.login_mid ?? 0) > 0,
 			};
 		}
