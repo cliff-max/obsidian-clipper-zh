@@ -341,11 +341,12 @@ export async function extractBilibiliStructuredContent(
 		return null;
 	}
 
-	const { playerData, loginEffective } = await fetchBilibiliPlayerData({
-		aid: viewData.aid ?? parsedUrl.aid,
-		bvid: viewData.bvid ?? parsedUrl.bvid,
-		cid: resolvedPage.cid,
-	});
+	const { playerData, loginEffective, subtitleStable } =
+		await fetchBilibiliPlayerData({
+			aid: viewData.aid ?? parsedUrl.aid,
+			bvid: viewData.bvid ?? parsedUrl.bvid,
+			cid: resolvedPage.cid,
+		});
 
 	const chapters = normalizeBilibiliChapters(playerData?.view_points || []);
 	const selectedTrack = selectBilibiliSubtitleTrack(
@@ -371,6 +372,7 @@ export async function extractBilibiliStructuredContent(
 		selectedTrack,
 		transcript.length,
 		loginEffective,
+		subtitleStable,
 	);
 	const transcriptText = transcript.map((cue) => cue.content).join("\n");
 	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
@@ -488,6 +490,43 @@ interface BilibiliPlayerFetchResult {
 	playerData: BilibiliPlayerData | null;
 	/** cookie 注入或页面上下文返回的数据是否携带登录身份（login_mid > 0）。 */
 	loginEffective: boolean;
+	/** 字幕轨双重采样是否稳定：false 表示接口风控抖动，轨列表已被清空。 */
+	subtitleStable: boolean;
+}
+
+function fingerprintSubtitleTracks(data: BilibiliPlayerData | null): string {
+	return JSON.stringify(
+		(data?.subtitle?.subtitles || [])
+			.map((track) => `${track.lan}|${track.subtitle_url || ""}`)
+			.sort(),
+	);
+}
+
+/** 返回去掉字幕轨的浅拷贝，用于风控抖动时丢弃不可信轨。 */
+function stripSubtitleTracks(data: BilibiliPlayerData): BilibiliPlayerData {
+	return { ...data, subtitle: { ...data.subtitle, subtitles: [] } };
+}
+
+/**
+ * B 站字幕接口存在风控钓鱼：同一视频随机返回空轨或指向无关视频的字幕轨。
+ * 拿到轨后用同一通道重放一次，两次轨集合不一致即判定为不可信。
+ */
+async function verifySubtitleTracksStable(
+	fetchVia: (url: string) => Promise<any>,
+	url: string,
+	data: BilibiliPlayerData,
+): Promise<boolean> {
+	try {
+		const replay = await fetchVia(url);
+		const replayData = replay?.data as BilibiliPlayerData | undefined;
+		if (!replayData) return true;
+		return (
+			fingerprintSubtitleTracks(replayData) ===
+			fingerprintSubtitleTracks(data)
+		);
+	} catch {
+		return true;
+	}
 }
 
 /**
@@ -511,6 +550,7 @@ async function fetchBilibiliPlayerData(input: {
 	// 第一级：匿名请求（wbi/v2 签名版优先，v2 兜底）。UP 主上传的公开字幕
 	// 匿名即可见，多数视频在此拿到数据。
 	let anonymousData: BilibiliPlayerData | null = null;
+	let anonymousUrl = "";
 	const urls: string[] = [];
 
 	if (input.aid && input.bvid) {
@@ -536,6 +576,7 @@ async function fetchBilibiliPlayerData(input: {
 			const data = await fetchBilibiliJson(url);
 			if (data?.data) {
 				anonymousData = data.data as BilibiliPlayerData;
+				anonymousUrl = url;
 				break;
 			}
 		} catch {
@@ -546,7 +587,22 @@ async function fetchBilibiliPlayerData(input: {
 	const anonymousSubtitleCount =
 		anonymousData?.subtitle?.subtitles?.length || 0;
 	if (anonymousSubtitleCount > 0) {
-		return { playerData: anonymousData, loginEffective: false };
+		const stable = await verifySubtitleTracksStable(
+			fetchBilibiliJson,
+			anonymousUrl,
+			anonymousData!,
+		);
+		return stable
+			? {
+					playerData: anonymousData,
+					loginEffective: false,
+					subtitleStable: true,
+				}
+			: {
+					playerData: stripSubtitleTracks(anonymousData!),
+					loginEffective: false,
+					subtitleStable: false,
+				};
 	}
 
 	// 第二级：DNR 注入登录 cookie 重试。固定用 v2 端点（实测 wbi/v2 对注入
@@ -560,10 +616,29 @@ async function fetchBilibiliPlayerData(input: {
 			const sessionSubtitleCount =
 				sessionPlayerData.subtitle?.subtitles?.length || 0;
 			if (sessionSubtitleCount > 0) {
-				return { playerData: sessionPlayerData, loginEffective };
+				const stable = await verifySubtitleTracksStable(
+					fetchBilibiliJsonWithCookies,
+					v2UrlString,
+					sessionPlayerData,
+				);
+				return stable
+					? {
+							playerData: sessionPlayerData,
+							loginEffective,
+							subtitleStable: true,
+						}
+					: {
+							playerData: stripSubtitleTracks(sessionPlayerData),
+							loginEffective,
+							subtitleStable: false,
+						};
 			}
 			// 登录态下依然无字幕轨——视频确实没有字幕，用登录态数据（含章节）即可
-			return { playerData: sessionPlayerData, loginEffective };
+			return {
+				playerData: sessionPlayerData,
+				loginEffective,
+				subtitleStable: true,
+			};
 		}
 	} catch (error) {
 		logger.warn("Cookie-injected player fetch failed", {
@@ -581,10 +656,24 @@ async function fetchBilibiliPlayerData(input: {
 		const pageContextSubtitleCount =
 			pageContextPlayerData?.subtitle?.subtitles?.length || 0;
 		if (pageContextSubtitleCount > 0) {
-			return {
-				playerData: pageContextPlayerData ?? null,
-				loginEffective: (pageContextPlayerData?.login_mid ?? 0) > 0,
-			};
+			const stable = await verifySubtitleTracksStable(
+				fetchBilibiliJsonViaMainWorld,
+				v2UrlString,
+				pageContextPlayerData!,
+			);
+			return stable
+				? {
+						playerData: pageContextPlayerData ?? null,
+						loginEffective:
+							(pageContextPlayerData?.login_mid ?? 0) > 0,
+						subtitleStable: true,
+					}
+				: {
+						playerData: stripSubtitleTracks(pageContextPlayerData!),
+						loginEffective:
+							(pageContextPlayerData?.login_mid ?? 0) > 0,
+						subtitleStable: false,
+					};
 		}
 	} catch (error) {
 		logger.warn("Page-context player fetch failed", {
@@ -593,7 +682,11 @@ async function fetchBilibiliPlayerData(input: {
 		});
 	}
 
-	return { playerData: anonymousData, loginEffective: false };
+	return {
+		playerData: anonymousData,
+		loginEffective: false,
+		subtitleStable: true,
+	};
 }
 
 /**
@@ -604,9 +697,13 @@ function buildSubtitleNotice(
 	selectedTrack: BilibiliSubtitleTrack | null,
 	transcriptLength: number,
 	loginEffective: boolean,
+	subtitleStable: boolean,
 ): string {
 	if (transcriptLength > 0) {
 		return "";
+	}
+	if (!subtitleStable) {
+		return "未获取到字幕：B 站接口本次返回的字幕轨不稳定（疑似风控），已忽略，请稍后重试";
 	}
 	if (!playerData) {
 		return "未获取到字幕：播放器接口请求失败（网络异常或接口受限）";

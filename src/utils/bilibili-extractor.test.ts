@@ -573,6 +573,116 @@ describe("bilibili extractor", () => {
 		expect(content?.chaptersMarkdown).toContain("第一章");
 	});
 
+	test("discards unstable subtitle tracks caused by risk-control flicker", async () => {
+		const sendMessage = vi.mocked(browser.runtime.sendMessage);
+		sendMessage.mockReset();
+		// 模拟风控抖动：cookie 注入第一次返回假轨，重放返回空轨
+		let withCookiesCalls = 0;
+		sendMessage.mockImplementation(async (message: any) => {
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/view")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							aid: 123,
+							bvid: "BV1riskFlick1",
+							title: "风控抖动视频",
+							desc: "简介",
+							cid: 456,
+							pages: [
+								{ page: 1, cid: 456, duration: 30, part: "P1" },
+							],
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/nav")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							wbi_img: {
+								img_url:
+									"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+								sub_url:
+									"https://i0.hdslb.com/bfs/wbi/4932caff0ff74675b6ecd3d1519e7b76.png",
+							},
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/player/")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							subtitle: { subtitles: [] },
+							view_points: [],
+						},
+					},
+				};
+			}
+			if (message.action === "fetchBilibiliJsonWithCookies") {
+				withCookiesCalls += 1;
+				const subtitles =
+					withCookiesCalls === 1
+						? [
+								{
+									lan: "ai-zh",
+									lan_doc: "中文（自动生成）",
+									subtitle_url:
+										"//aisubtitle.hdslb.com/bfs/ai_subtitle/fake.json",
+								},
+							]
+						: [];
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							login_mid: 1148704645,
+							subtitle: { subtitles },
+							view_points: [],
+						},
+					},
+				};
+			}
+			throw new Error(
+				`Unexpected message ${message.action}: ${message.url || ""}`,
+			);
+		});
+
+		const { document: doc } = parseHTML(
+			"<html><head><title>Bilibili</title></head><body></body></html>",
+		);
+		Object.defineProperty(doc, "URL", {
+			value: "https://www.bilibili.com/video/BV1riskFlick1/",
+			configurable: true,
+		});
+
+		const content = await extractBilibiliStructuredContent(
+			doc as unknown as Document,
+		);
+
+		// 抖动的轨不可信：丢弃字幕并给出明确提示，绝不写入假字幕
+		expect(content?.transcript).toHaveLength(0);
+		expect(content?.subtitleNotice).toContain("不稳定");
+		expect(content?.subtitleNotice).toContain("已忽略");
+		expect(content?.structuredHtml).not.toContain("fake.json");
+	});
+
 	test("keeps chapters and description when subtitle file fetch fails", async () => {
 		const sendMessage = vi.mocked(browser.runtime.sendMessage);
 		sendMessage.mockReset();
