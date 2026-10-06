@@ -366,13 +366,27 @@ export async function extractBilibiliStructuredContent(
 			});
 		}
 	}
-	const transcript = normalizeBilibiliTranscript(subtitleData?.body || []);
+	let transcript = normalizeBilibiliTranscript(subtitleData?.body || []);
+	let transcriptImplausible = false;
+	if (
+		transcript.length > 0 &&
+		!isTranscriptPlausible(transcript, resolvedPage.duration)
+	) {
+		logger.warn("Discarded implausible transcript", {
+			videoDuration: resolvedPage.duration,
+			lastCueFrom: transcript[transcript.length - 1].from,
+			cueCount: transcript.length,
+		});
+		transcript = [];
+		transcriptImplausible = true;
+	}
 	const subtitleNotice = buildSubtitleNotice(
 		playerData,
 		selectedTrack,
 		transcript.length,
 		loginEffective,
 		subtitleStable,
+		transcriptImplausible,
 	);
 	const transcriptText = transcript.map((cue) => cue.content).join("\n");
 	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
@@ -698,9 +712,13 @@ function buildSubtitleNotice(
 	transcriptLength: number,
 	loginEffective: boolean,
 	subtitleStable: boolean,
+	transcriptImplausible: boolean,
 ): string {
 	if (transcriptLength > 0) {
 		return "";
+	}
+	if (transcriptImplausible) {
+		return "未获取到字幕：接口返回的字幕与视频时长严重不符（疑似风控无效数据），已忽略，请稍后重试";
 	}
 	if (!subtitleStable) {
 		return "未获取到字幕：B 站接口本次返回的字幕轨不稳定（疑似风控），已忽略，请稍后重试";
@@ -740,6 +758,21 @@ function normalizeBilibiliChapters(
  * B 站以 ♪ 等音乐符号标注 BGM 歌词转写，不属于语音内容。
  */
 const MUSIC_CUE_PATTERN = /^[♪♫♩♬]/;
+
+/**
+ * 校验字幕覆盖时长与视频时长的匹配度。B 站风控返回的假字幕来自其他视频，
+ * 覆盖时长与本视频严重不符；真字幕（CC/AI 转写）总是覆盖全片。
+ * 字幕末条时间戳落在视频时长的 50%~150% 区间外即判定不可信。
+ * 60 秒以下的短视频豁免（字幕稀疏时易误判）。
+ */
+function isTranscriptPlausible(
+	transcript: BilibiliTranscriptCue[],
+	videoDuration: number,
+): boolean {
+	if (transcript.length === 0 || videoDuration < 60) return true;
+	const lastFrom = transcript[transcript.length - 1].from;
+	return lastFrom >= videoDuration * 0.5 && lastFrom <= videoDuration * 1.5;
+}
 
 /**
  * 字幕数据标准化。
