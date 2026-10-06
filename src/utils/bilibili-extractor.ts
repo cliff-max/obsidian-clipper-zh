@@ -1,8 +1,8 @@
-import browser from './browser-polyfill';
-import { createLogger } from './logger';
-import { getWbiKeys, signWbiQuery } from './bilibili-wbi';
+import browser from "./browser-polyfill";
+import { createLogger } from "./logger";
+import { getWbiKeys, signWbiQuery } from "./bilibili-wbi";
 
-const logger = createLogger('Bilibili');
+const logger = createLogger("Bilibili");
 
 export interface BilibiliParsedUrl {
 	bvid: string | null;
@@ -82,6 +82,8 @@ interface BilibiliSubtitleTrack {
 }
 
 interface BilibiliPlayerData {
+	/** 登录用户 mid，匿名请求为空或 0，用于判断登录态是否生效。 */
+	login_mid?: number;
 	subtitle?: {
 		subtitles?: BilibiliSubtitleTrack[];
 	};
@@ -106,8 +108,10 @@ interface BilibiliSubtitleResponse {
 export function isBilibiliVideoUrl(url: string): boolean {
 	try {
 		const parsedUrl = new URL(url);
-		return parsedUrl.hostname.includes('bilibili.com')
-			&& /^\/video\/(BV[\w]+|av\d+)/i.test(parsedUrl.pathname);
+		return (
+			parsedUrl.hostname.includes("bilibili.com") &&
+			/^\/video\/(BV[\w]+|av\d+)/i.test(parsedUrl.pathname)
+		);
 	} catch {
 		return false;
 	}
@@ -120,21 +124,23 @@ export function parseBilibiliUrl(url: string): BilibiliParsedUrl {
 	try {
 		const parsedUrl = new URL(url);
 		const match = parsedUrl.pathname.match(/^\/video\/(BV[\w]+|av\d+)/i);
-		const rawVideoId = match?.[1] || '';
-		const pageParam = parsedUrl.searchParams.get('p');
-		const page = Number.parseInt(pageParam || '1', 10);
+		const rawVideoId = match?.[1] || "";
+		const pageParam = parsedUrl.searchParams.get("p");
+		const page = Number.parseInt(pageParam || "1", 10);
 		return {
 			bvid: /^BV/i.test(rawVideoId) ? rawVideoId : null,
-			aid: /^av/i.test(rawVideoId) ? Number.parseInt(rawVideoId.slice(2), 10) : null,
+			aid: /^av/i.test(rawVideoId)
+				? Number.parseInt(rawVideoId.slice(2), 10)
+				: null,
 			page: Number.isFinite(page) && page > 0 ? page : 1,
-			hasExplicitPageParam: parsedUrl.searchParams.has('p')
+			hasExplicitPageParam: parsedUrl.searchParams.has("p"),
 		};
 	} catch {
 		return {
 			bvid: null,
 			aid: null,
 			page: 1,
-			hasExplicitPageParam: false
+			hasExplicitPageParam: false,
 		};
 	}
 }
@@ -142,9 +148,13 @@ export function parseBilibiliUrl(url: string): BilibiliParsedUrl {
 /**
  * 从 view 接口数据中解析当前分 P 的 cid。
  */
-export function resolveBilibiliPage(viewData: BilibiliViewData, page: number): BilibiliResolvedPage | null {
+export function resolveBilibiliPage(
+	viewData: BilibiliViewData,
+	page: number,
+): BilibiliResolvedPage | null {
 	const pages = Array.isArray(viewData.pages) ? viewData.pages : [];
-	const matchedPage = pages.find((item) => item.page === page) || pages[page - 1];
+	const matchedPage =
+		pages.find((item) => item.page === page) || pages[page - 1];
 	const cid = matchedPage?.cid ?? viewData.cid;
 	if (!cid) {
 		return null;
@@ -153,8 +163,8 @@ export function resolveBilibiliPage(viewData: BilibiliViewData, page: number): B
 	return {
 		cid,
 		page: matchedPage?.page ?? page,
-		part: matchedPage?.part || '',
-		duration: matchedPage?.duration ?? viewData.duration ?? 0
+		part: matchedPage?.part || "",
+		duration: matchedPage?.duration ?? viewData.duration ?? 0,
 	};
 }
 
@@ -162,8 +172,8 @@ export function resolveBilibiliPage(viewData: BilibiliViewData, page: number): B
  * 规范化字幕 URL，处理协议相对地址。
  */
 export function normalizeBilibiliSubtitleUrl(url: string): string {
-	if (!url) return '';
-	if (url.startsWith('//')) {
+	if (!url) return "";
+	if (url.startsWith("//")) {
 		return `https:${url}`;
 	}
 	return url;
@@ -179,18 +189,23 @@ export function formatBilibiliTimestamp(seconds: number): string {
 	const secs = totalSeconds % 60;
 
 	if (hours > 0) {
-		return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+		return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 	}
-	return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+	return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
 /**
  * 生成章节 Markdown。
  */
-export function buildBilibiliChaptersMarkdown(chapters: BilibiliChapter[]): string {
+export function buildBilibiliChaptersMarkdown(
+	chapters: BilibiliChapter[],
+): string {
 	return chapters
-		.map((chapter) => `- \`${formatBilibiliTimestamp(chapter.from)}\` ${chapter.title}`)
-		.join('\n');
+		.map(
+			(chapter) =>
+				`- \`${formatBilibiliTimestamp(chapter.from)}\` ${chapter.title}`,
+		)
+		.join("\n");
 }
 
 /**
@@ -198,19 +213,22 @@ export function buildBilibiliChaptersMarkdown(chapters: BilibiliChapter[]): stri
  */
 export function buildBilibiliTranscriptMarkdown(
 	transcript: BilibiliTranscriptCue[],
-	chapters: BilibiliChapter[]
+	chapters: BilibiliChapter[],
 ): string {
-	if (!transcript.length) return '';
+	if (!transcript.length) return "";
 
 	return groupTranscriptByChapters(transcript, chapters)
 		.map((group) => {
-			const heading = group.title ? `### ${group.title}\n\n` : '';
+			const heading = group.title ? `### ${group.title}\n\n` : "";
 			const lines = group.lines
-				.map((cue) => `- \`${formatBilibiliTimestamp(cue.from)}\` ${cue.content}`)
-				.join('\n');
+				.map(
+					(cue) =>
+						`- \`${formatBilibiliTimestamp(cue.from)}\` ${cue.content}`,
+				)
+				.join("\n");
 			return `${heading}${lines}`.trim();
 		})
-		.join('\n\n');
+		.join("\n\n");
 }
 
 /**
@@ -222,61 +240,74 @@ export function buildBilibiliStructuredHtml(input: {
 	transcript: BilibiliTranscriptCue[];
 	subtitleNotice?: string;
 }): string {
-	const sections: string[] = ['<section class="bilibili-structured-content">'];
+	const sections: string[] = [
+		'<section class="bilibili-structured-content">',
+	];
 
 	if (input.description.trim()) {
-		sections.push('<section class="bilibili-section bilibili-description">');
-		sections.push('<h2>简介</h2>');
+		sections.push(
+			'<section class="bilibili-section bilibili-description">',
+		);
+		sections.push("<h2>简介</h2>");
 		sections.push(`<p>${escapeHtml(input.description.trim())}</p>`);
-		sections.push('</section>');
+		sections.push("</section>");
 	}
 
 	if (input.chapters.length) {
 		sections.push('<section class="bilibili-section bilibili-chapters">');
-		sections.push('<h2>章节</h2>');
-		sections.push('<ol>');
+		sections.push("<h2>章节</h2>");
+		sections.push("<ol>");
 		input.chapters.forEach((chapter) => {
 			sections.push(
-				`<li><span class="bilibili-timestamp" data-time="${Math.floor(chapter.from)}">${formatBilibiliTimestamp(chapter.from)}</span> <span class="bilibili-chapter-title">${escapeHtml(chapter.title)}</span></li>`
+				`<li><span class="bilibili-timestamp" data-time="${Math.floor(chapter.from)}">${formatBilibiliTimestamp(chapter.from)}</span> <span class="bilibili-chapter-title">${escapeHtml(chapter.title)}</span></li>`,
 			);
 		});
-		sections.push('</ol>');
-		sections.push('</section>');
+		sections.push("</ol>");
+		sections.push("</section>");
 	}
 
 	if (input.transcript.length) {
 		sections.push('<section class="bilibili-section bilibili-transcript">');
-		sections.push('<h2>字幕</h2>');
+		sections.push("<h2>字幕</h2>");
 
-		const groupedTranscript = groupTranscriptByChapters(input.transcript, input.chapters);
+		const groupedTranscript = groupTranscriptByChapters(
+			input.transcript,
+			input.chapters,
+		);
 		groupedTranscript.forEach((group) => {
 			if (group.title) {
 				sections.push(`<h3>${escapeHtml(group.title)}</h3>`);
 			}
-			sections.push('<ul>');
+			sections.push("<ul>");
 			group.lines.forEach((cue) => {
 				sections.push(
-					`<li><span class="bilibili-timestamp" data-time="${Math.floor(cue.from)}">${formatBilibiliTimestamp(cue.from)}</span> <span class="bilibili-transcript-text">${escapeHtml(cue.content)}</span></li>`
+					`<li><span class="bilibili-timestamp" data-time="${Math.floor(cue.from)}">${formatBilibiliTimestamp(cue.from)}</span> <span class="bilibili-transcript-text">${escapeHtml(cue.content)}</span></li>`,
 				);
 			});
-			sections.push('</ul>');
+			sections.push("</ul>");
 		});
 
-		sections.push('</section>');
+		sections.push("</section>");
 	} else if (input.subtitleNotice) {
-		sections.push('<section class="bilibili-section bilibili-subtitle-notice">');
-		sections.push(`<p class="bilibili-subtitle-missing">${escapeHtml(input.subtitleNotice)}</p>`);
-		sections.push('</section>');
+		sections.push(
+			'<section class="bilibili-section bilibili-subtitle-notice">',
+		);
+		sections.push(
+			`<p class="bilibili-subtitle-missing">${escapeHtml(input.subtitleNotice)}</p>`,
+		);
+		sections.push("</section>");
 	}
 
-	sections.push('</section>');
-	return sections.join('');
+	sections.push("</section>");
+	return sections.join("");
 }
 
 /**
  * 从当前文档提取 B 站结构化内容。
  */
-export async function extractBilibiliStructuredContent(doc: Document): Promise<BilibiliStructuredContent | null> {
+export async function extractBilibiliStructuredContent(
+	doc: Document,
+): Promise<BilibiliStructuredContent | null> {
 	if (!isBilibiliVideoUrl(doc.URL)) {
 		return null;
 	}
@@ -286,64 +317,100 @@ export async function extractBilibiliStructuredContent(doc: Document): Promise<B
 		return null;
 	}
 
-	const viewUrl = new URL('https://api.bilibili.com/x/web-interface/view');
+	const viewUrl = new URL("https://api.bilibili.com/x/web-interface/view");
 	if (parsedUrl.bvid) {
-		viewUrl.searchParams.set('bvid', parsedUrl.bvid);
+		viewUrl.searchParams.set("bvid", parsedUrl.bvid);
 	}
 	if (parsedUrl.aid) {
-		viewUrl.searchParams.set('aid', String(parsedUrl.aid));
+		viewUrl.searchParams.set("aid", String(parsedUrl.aid));
 	}
 
 	const viewResponse = await fetchBilibiliJson(viewUrl.toString());
 	const viewData = viewResponse?.data as BilibiliViewData | undefined;
 	if (!viewData) {
-		logger.warn('View API returned no data', { url: viewUrl.toString() });
+		logger.warn("View API returned no data", { url: viewUrl.toString() });
 		return null;
 	}
 
 	const resolvedPage = resolveBilibiliPage(viewData, parsedUrl.page);
 	if (!resolvedPage) {
-		logger.warn('Failed to resolve page', { bvid: viewData.bvid, requestedPage: parsedUrl.page });
+		logger.warn("Failed to resolve page", {
+			bvid: viewData.bvid,
+			requestedPage: parsedUrl.page,
+		});
 		return null;
 	}
 
-	const playerData = await fetchBilibiliPlayerData({
+	const { playerData, loginEffective } = await fetchBilibiliPlayerData({
 		aid: viewData.aid ?? parsedUrl.aid,
 		bvid: viewData.bvid ?? parsedUrl.bvid,
-		cid: resolvedPage.cid
+		cid: resolvedPage.cid,
 	});
 
 	const chapters = normalizeBilibiliChapters(playerData?.view_points || []);
-	const selectedTrack = selectBilibiliSubtitleTrack(playerData?.subtitle?.subtitles || []);
-	const subtitleData = selectedTrack?.subtitle_url
-		? await fetchBilibiliJson(normalizeBilibiliSubtitleUrl(selectedTrack.subtitle_url)) as BilibiliSubtitleResponse
-		: null;
+	const selectedTrack = selectBilibiliSubtitleTrack(
+		playerData?.subtitle?.subtitles || [],
+	);
+	// 字幕文件拉取失败时降级为无字幕，避免整个提取失败丢掉简介与章节。
+	let subtitleData: BilibiliSubtitleResponse | null = null;
+	if (selectedTrack?.subtitle_url) {
+		try {
+			subtitleData = (await fetchBilibiliJson(
+				normalizeBilibiliSubtitleUrl(selectedTrack.subtitle_url),
+			)) as BilibiliSubtitleResponse;
+		} catch (error) {
+			logger.warn("Subtitle file fetch failed", {
+				url: selectedTrack.subtitle_url,
+				error: String(error),
+			});
+		}
+	}
 	const transcript = normalizeBilibiliTranscript(subtitleData?.body || []);
-	const subtitleNotice = buildSubtitleNotice(playerData, selectedTrack, transcript.length);
-	const transcriptText = transcript.map((cue) => cue.content).join('\n');
-	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(transcript, chapters);
+	const subtitleNotice = buildSubtitleNotice(
+		playerData,
+		selectedTrack,
+		transcript.length,
+		loginEffective,
+	);
+	const transcriptText = transcript.map((cue) => cue.content).join("\n");
+	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
+		transcript,
+		chapters,
+	);
 	const chaptersMarkdown = buildBilibiliChaptersMarkdown(chapters);
-	const description = viewData.desc || readMetaContent(doc, 'meta[name="description"]') || '';
-	const title = viewData.title || readMetaContent(doc, 'meta[property="og:title"]') || doc.title || '';
-	const image = viewData.pic || readMetaContent(doc, 'meta[property="og:image"]') || '';
-	const author = viewData.owner?.name
-		|| readTextContent(doc, '.up-name')
-		|| readTextContent(doc, '[data-user-name]')
-		|| '';
-	const published = viewData.pubdate ? new Date(viewData.pubdate * 1000).toISOString() : '';
+	const description =
+		viewData.desc || readMetaContent(doc, 'meta[name="description"]') || "";
+	const title =
+		viewData.title ||
+		readMetaContent(doc, 'meta[property="og:title"]') ||
+		doc.title ||
+		"";
+	const image =
+		viewData.pic || readMetaContent(doc, 'meta[property="og:image"]') || "";
+	const author =
+		viewData.owner?.name ||
+		readTextContent(doc, ".up-name") ||
+		readTextContent(doc, "[data-user-name]") ||
+		"";
+	const published = viewData.pubdate
+		? new Date(viewData.pubdate * 1000).toISOString()
+		: "";
 	const structuredHtml = buildBilibiliStructuredHtml({
 		description,
 		chapters,
 		transcript,
-		subtitleNotice
+		subtitleNotice,
 	});
-	const wordCount = `${description}\n${transcriptText}`.trim().split(/\s+/).filter(Boolean).length;
+	const wordCount = `${description}\n${transcriptText}`
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean).length;
 
-	logger.info('Extraction complete', {
+	logger.info("Extraction complete", {
 		bvid: viewData.bvid,
 		chapters: chapters.length,
 		transcriptCues: transcript.length,
-		subtitleTrack: selectedTrack?.lan_doc ?? 'none',
+		subtitleTrack: selectedTrack?.lan_doc ?? "none",
 	});
 
 	return {
@@ -352,7 +419,7 @@ export async function extractBilibiliStructuredContent(doc: Document): Promise<B
 		description,
 		published,
 		image,
-		bvid: viewData.bvid || parsedUrl.bvid || '',
+		bvid: viewData.bvid || parsedUrl.bvid || "",
 		aid: viewData.aid ?? parsedUrl.aid,
 		cid: resolvedPage.cid,
 		page: resolvedPage.page,
@@ -363,7 +430,7 @@ export async function extractBilibiliStructuredContent(doc: Document): Promise<B
 		transcriptMarkdown,
 		chaptersMarkdown,
 		structuredHtml,
-		wordCount
+		wordCount,
 	};
 }
 
@@ -371,26 +438,28 @@ export async function extractBilibiliStructuredContent(doc: Document): Promise<B
  * 通过 background 代理抓取 B 站 JSON，避免内容脚本直接跨域请求失败。
  */
 async function fetchBilibiliJson(url: string): Promise<any> {
-	const response = await browser.runtime.sendMessage({
-		action: 'fetchBilibiliJson',
-		url
-	}) as { success?: boolean; data?: any; error?: string };
+	const response = (await browser.runtime.sendMessage({
+		action: "fetchBilibiliJson",
+		url,
+	})) as { success?: boolean; data?: any; error?: string };
 
 	if (!response?.success) {
-		throw new Error(response?.error || 'Failed to fetch Bilibili data');
+		throw new Error(response?.error || "Failed to fetch Bilibili data");
 	}
 
 	return response.data;
 }
 
 async function fetchBilibiliJsonViaMainWorld(url: string): Promise<any> {
-	const response = await browser.runtime.sendMessage({
-		action: 'fetchBilibiliJsonViaMainWorld',
-		url
-	}) as { success?: boolean; data?: any; error?: string };
+	const response = (await browser.runtime.sendMessage({
+		action: "fetchBilibiliJsonViaMainWorld",
+		url,
+	})) as { success?: boolean; data?: any; error?: string };
 
 	if (!response?.success) {
-		throw new Error(response?.error || 'Failed to fetch Bilibili data via page context');
+		throw new Error(
+			response?.error || "Failed to fetch Bilibili data via page context",
+		);
 	}
 
 	return response.data;
@@ -401,16 +470,24 @@ async function fetchBilibiliJsonViaMainWorld(url: string): Promise<any> {
  * 由 background 用 DNR 注入 Cookie 头完成（仅 Chrome 系）。
  */
 async function fetchBilibiliJsonWithCookies(url: string): Promise<any> {
-	const response = await browser.runtime.sendMessage({
-		action: 'fetchBilibiliJsonWithCookies',
-		url
-	}) as { success?: boolean; data?: any; error?: string };
+	const response = (await browser.runtime.sendMessage({
+		action: "fetchBilibiliJsonWithCookies",
+		url,
+	})) as { success?: boolean; data?: any; error?: string };
 
 	if (!response?.success) {
-		throw new Error(response?.error || 'Failed to fetch Bilibili data with cookies');
+		throw new Error(
+			response?.error || "Failed to fetch Bilibili data with cookies",
+		);
 	}
 
 	return response.data;
+}
+
+interface BilibiliPlayerFetchResult {
+	playerData: BilibiliPlayerData | null;
+	/** cookie 注入或页面上下文返回的数据是否携带登录身份（login_mid > 0）。 */
+	loginEffective: boolean;
 }
 
 /**
@@ -420,14 +497,14 @@ async function fetchBilibiliPlayerData(input: {
 	aid: number | null | undefined;
 	bvid: string | null | undefined;
 	cid: number;
-}): Promise<BilibiliPlayerData | null> {
-	const v2Url = new URL('https://api.bilibili.com/x/player/v2');
-	v2Url.searchParams.set('cid', String(input.cid));
+}): Promise<BilibiliPlayerFetchResult> {
+	const v2Url = new URL("https://api.bilibili.com/x/player/v2");
+	v2Url.searchParams.set("cid", String(input.cid));
 	if (input.bvid) {
-		v2Url.searchParams.set('bvid', input.bvid);
+		v2Url.searchParams.set("bvid", input.bvid);
 	}
 	if (input.aid) {
-		v2Url.searchParams.set('aid', String(input.aid));
+		v2Url.searchParams.set("aid", String(input.aid));
 	}
 	const v2UrlString = v2Url.toString();
 
@@ -439,12 +516,17 @@ async function fetchBilibiliPlayerData(input: {
 	if (input.aid && input.bvid) {
 		const wbiKeys = await getWbiKeys(fetchBilibiliJson).catch(() => null);
 		if (wbiKeys) {
-			const signedQuery = signWbiQuery({
-				aid: String(input.aid),
-				bvid: input.bvid,
-				cid: String(input.cid)
-			}, wbiKeys);
-			urls.push(`https://api.bilibili.com/x/player/wbi/v2?${signedQuery}`);
+			const signedQuery = signWbiQuery(
+				{
+					aid: String(input.aid),
+					bvid: input.bvid,
+					cid: String(input.cid),
+				},
+				wbiKeys,
+			);
+			urls.push(
+				`https://api.bilibili.com/x/player/wbi/v2?${signedQuery}`,
+			);
 		}
 	}
 	urls.push(v2UrlString);
@@ -461,39 +543,57 @@ async function fetchBilibiliPlayerData(input: {
 		}
 	}
 
-	const anonymousSubtitleCount = anonymousData?.subtitle?.subtitles?.length || 0;
+	const anonymousSubtitleCount =
+		anonymousData?.subtitle?.subtitles?.length || 0;
 	if (anonymousSubtitleCount > 0) {
-		return anonymousData;
+		return { playerData: anonymousData, loginEffective: false };
 	}
 
 	// 第二级：DNR 注入登录 cookie 重试。固定用 v2 端点（实测 wbi/v2 对注入
 	// cookie 仍按匿名处理，v2 + cookie 可取回 AI 字幕轨）。AI 字幕需要登录态。
 	try {
 		const sessionData = await fetchBilibiliJsonWithCookies(v2UrlString);
-		const sessionSubtitleCount = sessionData?.data?.subtitle?.subtitles?.length || 0;
-		if (sessionSubtitleCount > 0) {
-			return sessionData.data as BilibiliPlayerData;
-		}
-		if (sessionData?.data) {
-			// 登录态下依然无字幕轨——视频确实没有字幕，用匿名数据（含章节）即可
-			return sessionData.data as BilibiliPlayerData;
+		const sessionPlayerData = sessionData?.data as
+			BilibiliPlayerData | undefined;
+		if (sessionPlayerData) {
+			const loginEffective = (sessionPlayerData.login_mid ?? 0) > 0;
+			const sessionSubtitleCount =
+				sessionPlayerData.subtitle?.subtitles?.length || 0;
+			if (sessionSubtitleCount > 0) {
+				return { playerData: sessionPlayerData, loginEffective };
+			}
+			// 登录态下依然无字幕轨——视频确实没有字幕，用登录态数据（含章节）即可
+			return { playerData: sessionPlayerData, loginEffective };
 		}
 	} catch (error) {
-		logger.warn('Cookie-injected player fetch failed', { url: v2UrlString, error: String(error) });
+		logger.warn("Cookie-injected player fetch failed", {
+			url: v2UrlString,
+			error: String(error),
+		});
 	}
 
-	// 第三级：页面上下文兜底（非 Chromium 浏览器）。
+	// 第三级：页面上下文兜底（非 Chromium 浏览器）。页面上下文自带登录 cookie。
 	try {
-		const pageContextData = await fetchBilibiliJsonViaMainWorld(v2UrlString);
-		const pageContextSubtitleCount = pageContextData?.data?.subtitle?.subtitles?.length || 0;
+		const pageContextData =
+			await fetchBilibiliJsonViaMainWorld(v2UrlString);
+		const pageContextPlayerData = pageContextData?.data as
+			BilibiliPlayerData | undefined;
+		const pageContextSubtitleCount =
+			pageContextPlayerData?.subtitle?.subtitles?.length || 0;
 		if (pageContextSubtitleCount > 0) {
-			return pageContextData.data as BilibiliPlayerData;
+			return {
+				playerData: pageContextPlayerData,
+				loginEffective: (pageContextPlayerData?.login_mid ?? 0) > 0,
+			};
 		}
 	} catch (error) {
-		logger.warn('Page-context player fetch failed', { url: v2UrlString, error: String(error) });
+		logger.warn("Page-context player fetch failed", {
+			url: v2UrlString,
+			error: String(error),
+		});
 	}
 
-	return anonymousData;
+	return { playerData: anonymousData, loginEffective: false };
 }
 
 /**
@@ -502,86 +602,128 @@ async function fetchBilibiliPlayerData(input: {
 function buildSubtitleNotice(
 	playerData: BilibiliPlayerData | null,
 	selectedTrack: BilibiliSubtitleTrack | null,
-	transcriptLength: number
+	transcriptLength: number,
+	loginEffective: boolean,
 ): string {
 	if (transcriptLength > 0) {
-		return '';
+		return "";
 	}
 	if (!playerData) {
-		return '未获取到字幕：播放器接口请求失败（网络异常或接口受限）';
+		return "未获取到字幕：播放器接口请求失败（网络异常或接口受限）";
 	}
 	if (!selectedTrack) {
-		return '未获取到字幕：该视频可能没有可用字幕；AI 字幕需要登录 B 站账号后重试';
+		return loginEffective
+			? "未获取到字幕：该视频没有可用字幕（UP 未上传 CC 字幕，B 站也未生成 AI 字幕）"
+			: "未获取到字幕：该视频可能没有可用字幕；AI 字幕需要登录 B 站账号后重试";
 	}
-	return '未获取到字幕：字幕内容拉取失败，请稍后重试';
+	return "未获取到字幕：字幕内容拉取失败或仅含音乐标记，请稍后重试";
 }
 
 /**
  * 章节数据标准化。
  */
-function normalizeBilibiliChapters(viewPoints: Array<{ content?: string; from?: number; to?: number }>): BilibiliChapter[] {
+function normalizeBilibiliChapters(
+	viewPoints: Array<{ content?: string; from?: number; to?: number }>,
+): BilibiliChapter[] {
 	return viewPoints
-		.filter((item) => typeof item.content === 'string' && typeof item.from === 'number')
+		.filter(
+			(item) =>
+				typeof item.content === "string" &&
+				typeof item.from === "number",
+		)
 		.map((item) => ({
 			title: item.content!.trim(),
 			from: item.from!,
-			to: item.to
+			to: item.to,
 		}))
 		.filter((item) => item.title.length > 0);
 }
 
 /**
+ * B 站以 ♪ 等音乐符号标注 BGM 歌词转写，不属于语音内容。
+ */
+const MUSIC_CUE_PATTERN = /^[♪♫♩♬]/;
+
+/**
  * 字幕数据标准化。
  */
-function normalizeBilibiliTranscript(body: Array<{ from?: number; to?: number; content?: string }>): BilibiliTranscriptCue[] {
+function normalizeBilibiliTranscript(
+	body: Array<{ from?: number; to?: number; content?: string }>,
+): BilibiliTranscriptCue[] {
 	return body
-		.filter((item) => typeof item.from === 'number' && typeof item.to === 'number' && typeof item.content === 'string')
+		.filter(
+			(item) =>
+				typeof item.from === "number" &&
+				typeof item.to === "number" &&
+				typeof item.content === "string",
+		)
 		.map((item) => ({
 			from: item.from!,
 			to: item.to!,
-			content: item.content!.replace(/\s+/g, ' ').trim()
+			content: item.content!.replace(/\s+/g, " ").trim(),
 		}))
-		.filter((item) => item.content.length > 0);
+		.filter(
+			(item) =>
+				item.content.length > 0 &&
+				!MUSIC_CUE_PATTERN.test(item.content),
+		);
 }
 
 /**
  * 根据语言优先级选择最合适的字幕轨。
  */
-function selectBilibiliSubtitleTrack(tracks: BilibiliSubtitleTrack[]): BilibiliSubtitleTrack | null {
+function selectBilibiliSubtitleTrack(
+	tracks: BilibiliSubtitleTrack[],
+): BilibiliSubtitleTrack | null {
 	if (!tracks.length) return null;
 
 	const scoreTrack = (track: BilibiliSubtitleTrack): number => {
-		const language = `${track.lan || ''} ${track.lan_doc || ''}`.toLowerCase();
-		if (language.includes('zh-cn') || language.includes('中文') || language.includes('汉语')) return 5;
-		if (language.includes('zh-hans') || language.includes('简体')) return 4;
-		if (language.includes('zh')) return 3;
-		if (language.includes('en') || language.includes('english')) return 2;
+		const language =
+			`${track.lan || ""} ${track.lan_doc || ""}`.toLowerCase();
+		if (
+			language.includes("zh-cn") ||
+			language.includes("中文") ||
+			language.includes("汉语")
+		)
+			return 5;
+		if (language.includes("zh-hans") || language.includes("简体")) return 4;
+		if (language.includes("zh")) return 3;
+		if (language.includes("en") || language.includes("english")) return 2;
 		return 1;
 	};
 
-	return [...tracks]
-		.sort((left, right) => scoreTrack(right) - scoreTrack(left))[0] || null;
+	return (
+		[...tracks].sort(
+			(left, right) => scoreTrack(right) - scoreTrack(left),
+		)[0] || null
+	);
 }
 
 function groupTranscriptByChapters(
 	transcript: BilibiliTranscriptCue[],
-	chapters: BilibiliChapter[]
+	chapters: BilibiliChapter[],
 ): Array<{ title?: string; lines: BilibiliTranscriptCue[] }> {
 	if (!chapters.length) {
 		return [{ lines: transcript }];
 	}
 
-	const groups = chapters.map((chapter) => ({
-		title: chapter.title,
-		lines: transcript.filter((cue) => cue.from >= chapter.from && cue.from < (chapter.to ?? Number.POSITIVE_INFINITY))
-	})).filter((group) => group.lines.length > 0);
+	const groups = chapters
+		.map((chapter) => ({
+			title: chapter.title,
+			lines: transcript.filter(
+				(cue) =>
+					cue.from >= chapter.from &&
+					cue.from < (chapter.to ?? Number.POSITIVE_INFINITY),
+			),
+		}))
+		.filter((group) => group.lines.length > 0);
 
 	const groupedLines = new Set(groups.flatMap((group) => group.lines));
 	const leftovers = transcript.filter((cue) => !groupedLines.has(cue));
 	if (leftovers.length) {
 		groups.push({
-			title: '其他片段',
-			lines: leftovers
+			title: "其他片段",
+			lines: leftovers,
 		});
 	}
 
@@ -590,18 +732,18 @@ function groupTranscriptByChapters(
 
 function readMetaContent(doc: Document, selector: string): string {
 	const element = doc.querySelector(selector) as HTMLMetaElement | null;
-	return element?.content?.trim() || '';
+	return element?.content?.trim() || "";
 }
 
 function readTextContent(doc: Document, selector: string): string {
-	return doc.querySelector(selector)?.textContent?.trim() || '';
+	return doc.querySelector(selector)?.textContent?.trim() || "";
 }
 
 function escapeHtml(value: string): string {
 	return value
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
