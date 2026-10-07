@@ -89,7 +89,7 @@ B 站部分视频（如"好人松松"《新手健身看这个✔》合集）没�
 
 ### 4.6 UI
 
-- **popup**：B 站视频 + 无字幕时显示「AI 转写字幕」按钮；任务进行中显示进度条；完成后显示"已就绪，重新剪藏即可"。
+- **页面浮层**（content script 注入，shadow DOM 隔离，不动 popup.ts）：B 站视频页 + 无字幕缓存时在页面右下角显示「AI 转写字幕」小面板——空闲时为按钮、任务中显示进度（已完成/总块数）、完成后提示"重新剪藏即可使用"。
 - **settings**：新增"AI 转写"区块——SiliconFlow API Key（密码框）、模型下拉（Qwen/Qwen3-ASR-1.7B 默认 / FunAudioLLM/SenseVoiceSmall / XingChenAGI/XingChenASR-V3.2-Ultra）、自定义 base URL（高级，折叠）。
 - i18n：zh_CN / en 两套文案（沿用 `_locales` 体系）。
 
