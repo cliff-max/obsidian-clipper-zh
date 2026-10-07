@@ -1,5 +1,19 @@
-import { describe, expect, test } from "vitest";
-import { buildChunkPlan, findMoofOffsets } from "./bilibili-audio";
+import { describe, expect, test, vi } from "vitest";
+import {
+	buildChunkPlan,
+	fetchBilibiliAudioStream,
+	findMoofOffsets,
+} from "./bilibili-audio";
+
+vi.mock("./browser-polyfill", () => ({
+	default: {
+		runtime: {
+			sendMessage: vi.fn(),
+		},
+	},
+}));
+
+import browser from "./browser-polyfill";
 
 function box(type: string, payloadLen: number): Uint8Array {
 	const buf = new Uint8Array(8 + payloadLen);
@@ -63,5 +77,110 @@ describe("buildChunkPlan", () => {
 
 	test("empty offsets yield empty plan", () => {
 		expect(buildChunkPlan([], 100, 100, 8000, 64000)).toEqual([]);
+	});
+});
+
+describe("fetchBilibiliAudioStream", () => {
+	test("picks 64kbps track (id 30232) with fallback to lowest bandwidth", async () => {
+		const sendMessage = vi.mocked(browser.runtime.sendMessage);
+		sendMessage.mockReset();
+		sendMessage.mockImplementation(async (message: any) => {
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/nav")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							wbi_img: {
+								img_url:
+									"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+								sub_url:
+									"https://i0.hdslb.com/bfs/wbi/4932caff0ff74675b6ecd3d1519e7b76.png",
+							},
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJsonWithCookies" &&
+				message.url.includes("playurl")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							timelength: 6646000000,
+							dash: {
+								audio: [
+									{
+										id: 30280,
+										baseUrl: "https://upos.example/a.m4s",
+										bandwidth: 320000,
+									},
+									{
+										id: 30232,
+										baseUrl: "https://upos.example/64k.m4s",
+										bandwidth: 64000,
+									},
+								],
+							},
+						},
+					},
+				};
+			}
+			throw new Error(`unexpected ${message.action}`);
+		});
+		const stream = await fetchBilibiliAudioStream({
+			aid: 1,
+			bvid: "BV1test",
+			cid: 2,
+		});
+		expect(stream.url).toBe("https://upos.example/64k.m4s");
+		expect(stream.bitrateBps).toBe(64000);
+		const call = sendMessage.mock.calls.find(
+			([m]: any[]) => m.action === "fetchBilibiliJsonWithCookies",
+		) as any[];
+		expect(call[0].url).toContain("fnval=16");
+		expect(call[0].url).toMatch(/w_rid=[0-9a-f]{32}/);
+	});
+
+	test("throws readable error when no audio track", async () => {
+		const sendMessage = vi.mocked(browser.runtime.sendMessage);
+		sendMessage.mockReset();
+		sendMessage.mockImplementation(async (message: any) => {
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/nav")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							wbi_img: {
+								img_url:
+									"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+								sub_url:
+									"https://i0.hdslb.com/bfs/wbi/4932caff0ff74675b6ecd3d1519e7b76.png",
+							},
+						},
+					},
+				};
+			}
+			if (message.action === "fetchBilibiliJsonWithCookies") {
+				return {
+					success: true,
+					data: { code: 0, data: { dash: { audio: [] } } },
+				};
+			}
+			throw new Error(`unexpected ${message.action}`);
+		});
+		await expect(
+			fetchBilibiliAudioStream({ aid: 1, bvid: "BV1t", cid: 2 }),
+		).rejects.toThrow("无可用音频流");
 	});
 });
