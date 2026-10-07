@@ -1084,3 +1084,118 @@ describe("AI transcript cache injection", () => {
 		expect(content?.subtitleNotice).not.toContain("AI 语音转写");
 	});
 });
+
+describe("subtitle track stability fingerprint", () => {
+	function mockWithCookiesUrlRotation() {
+		const sendMessage = vi.mocked(browser.runtime.sendMessage);
+		sendMessage.mockReset();
+		let cookieCalls = 0;
+		sendMessage.mockImplementation(async (message: any) => {
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/view")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							aid: 123,
+							bvid: "BV1urlRotate1",
+							title: "签名轮换视频",
+							desc: "简介",
+							cid: 456,
+							pages: [
+								{ page: 1, cid: 456, duration: 30, part: "P1" },
+							],
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/nav")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							wbi_img: {
+								img_url:
+									"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+								sub_url:
+									"https://i0.hdslb.com/bfs/wbi/4932caff0ff74675b6ecd3d1519e7b76.png",
+							},
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/player/")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: { subtitle: { subtitles: [] }, view_points: [] },
+					},
+				};
+			}
+			if (message.action === "fetchBilibiliJsonWithCookies") {
+				cookieCalls += 1;
+				// 两次请求返回同一语言轨，但 auth_key 签名必然不同（B 站行为）
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							login_mid: 1,
+							subtitle: {
+								subtitles: [
+									{
+										lan: "ai-zh",
+										lan_doc: "中文（自动生成）",
+										subtitle_url: `//aisubtitle.hdslb.com/bfs/ai_subtitle/x.json?auth_key=sign-${cookieCalls}`,
+									},
+								],
+							},
+							view_points: [],
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/ai_subtitle/x.json")
+			) {
+				return {
+					success: true,
+					data: {
+						body: [
+							{ from: 0, to: 2, content: "签名轮换下的正常字幕" },
+						],
+					},
+				};
+			}
+			throw new Error(`Unexpected ${message.action}`);
+		});
+	}
+
+	test("auth_key rotation in subtitle urls must not be flagged as risk-control flicker", async () => {
+		mockWithCookiesUrlRotation();
+		const { document: doc } = parseHTML(
+			"<html><head><title>Bilibili</title></head><body></body></html>",
+		);
+		Object.defineProperty(doc, "URL", {
+			value: "https://www.bilibili.com/video/BV1urlRotate1/",
+			configurable: true,
+		});
+		const content = await extractBilibiliStructuredContent(
+			doc as unknown as Document,
+		);
+		expect(content?.transcriptText).toBe("签名轮换下的正常字幕");
+		expect(content?.subtitleNotice).toBe("");
+	});
+});

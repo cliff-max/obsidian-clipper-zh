@@ -1,6 +1,7 @@
 import browser from "./utils/browser-polyfill";
 import { getMessage } from "./utils/i18n";
 import {
+	TRANSCRIBE_NEED_PREFIX,
 	isBilibiliVideoUrl,
 	parseBilibiliUrl,
 } from "./utils/bilibili-extractor";
@@ -10,13 +11,11 @@ const logger = createLogger("TranscribeUi");
 
 const PANEL_ID = "obsidian-clipper-transcribe-panel";
 const POLL_INTERVAL_MS = 3000;
-/** 等待播放器控制栏就绪以检测 CC 字幕按钮的轮询上限。 */
-const CC_PROBE_TIMEOUT_MS = 15000;
-const CC_PROBE_INTERVAL_MS = 1000;
 
 /**
  * B 站视频页右下角浮层：AI 转写入口与进度（shadow DOM 隔离）。
- * 有 CC 字幕选项的视频不显示（已有字幕无需转写）。
+ * 仅对"剪藏时确认无字幕"的视频显示（读 extractor 写入的标记），
+ * 有字幕轨或已有转写的视频不显示。
  */
 export function initTranscribeUi(): void {
 	if (!isBilibiliVideoUrl(location.href)) return;
@@ -54,32 +53,18 @@ async function fetchStatus(bvid: string): Promise<any> {
 	}
 }
 
-/** 等待播放器控制栏并检测 CC 字幕按钮；超时视为无字幕。 */
-function waitForCcButtonDecision(): Promise<boolean> {
-	return new Promise((resolve) => {
-		const started = Date.now();
-		const probe = () => {
-			const player = document.querySelector(
-				".bpx-player-container, #bilibili-player, .bpx-player",
-			);
-			if (player) {
-				// 控制栏已渲染：有 CC 按钮即有字幕轨
-				const controls = document.querySelector(
-					".bpx-player-control-bottom",
-				);
-				if (controls) {
-					resolve(!!document.querySelector(".bpx-player-ctrl-sub"));
-					return;
-				}
-			}
-			if (Date.now() - started >= CC_PROBE_TIMEOUT_MS) {
-				resolve(false);
-				return;
-			}
-			setTimeout(probe, CC_PROBE_INTERVAL_MS);
-		};
-		probe();
-	});
+/** 是否存在"剪藏时确认无字幕"的标记（按 bvid 前缀，多 P 任一分 P 标记即显示）。 */
+async function hasTranscribeNeed(bvid: string): Promise<boolean> {
+	try {
+		const all = (await browser.storage.local.get(null)) as Record<
+			string,
+			unknown
+		>;
+		const prefix = `${TRANSCRIBE_NEED_PREFIX}${bvid}:`;
+		return Object.keys(all).some((key) => key.startsWith(prefix));
+	} catch {
+		return false;
+	}
 }
 
 async function renderPanel(): Promise<void> {
@@ -87,13 +72,13 @@ async function renderPanel(): Promise<void> {
 	const parsed = parseBilibiliUrl(location.href);
 	if (!parsed.bvid) return;
 
-	// 已有成品缓存或运行中任务 → 始终显示（含"已有 AI 转写"状态）
+	// 有运行中任务或已完成的转写 → 显示（进度/完成态）
 	let state = await fetchStatus(parsed.bvid);
 	if (!state) {
-		// 无缓存任务：有 CC 字幕选项的视频不显示浮层
-		const hasCc = await waitForCcButtonDecision();
-		if (hasCc) {
-			logger.info("Panel hidden: subtitle track available");
+		// 无任务：仅对剪藏时确认无字幕的视频显示入口
+		const needed = await hasTranscribeNeed(parsed.bvid);
+		if (!needed) {
+			logger.info("Panel hidden: subtitles available or not clipped yet");
 			return;
 		}
 	}

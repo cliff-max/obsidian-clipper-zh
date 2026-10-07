@@ -406,6 +406,12 @@ export async function extractBilibiliStructuredContent(
 			finalNotice = `以下内容由 AI 语音转写生成（模型 ${cached.model}），可能存在识别误差`;
 		}
 	}
+	// 维护"需 AI 转写"标记：确认无字幕且无缓存时置位，供页面浮层决定显隐
+	await markTranscribeNeed(
+		viewData.bvid || parsedUrl.bvid || "",
+		resolvedPage.cid,
+		transcript.length === 0 && subtitleStable,
+	);
 	const transcriptText = transcript.map((cue) => cue.content).join("\n");
 	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
 		transcript,
@@ -477,6 +483,36 @@ interface CachedTranscript {
 /** AI 转写成品缓存的存储键（写读两侧统一使用）。 */
 export function transcriptCacheKey(bvid: string, cid: number): string {
 	return `biliTranscript:${bvid}:${cid}`;
+}
+
+/** "需 AI 转写"标记的存储键前缀（剪藏确认无字幕后写入，浮层据此显隐）。 */
+export const TRANSCRIBE_NEED_PREFIX = "biliNeedsTranscribe:";
+
+/**
+ * 维护"需 AI 转写"标记：needed 为 true 时置位，否则清除。
+ */
+async function markTranscribeNeed(
+	bvid: string,
+	cid: number,
+	needed: boolean,
+): Promise<void> {
+	if (!bvid || !cid) return;
+	const key = `${TRANSCRIBE_NEED_PREFIX}${bvid}:${cid}`;
+	try {
+		if (needed) {
+			await browser.storage.local.set({ [key]: Date.now() });
+		} else {
+			const existing = await browser.storage.local.get(key);
+			if (
+				existing &&
+				(existing as Record<string, unknown>)[key] !== undefined
+			) {
+				await browser.storage.local.remove(key);
+			}
+		}
+	} catch {
+		// 标记维护失败不影响剪藏主流程
+	}
 }
 
 /**
@@ -558,9 +594,11 @@ interface BilibiliPlayerFetchResult {
 }
 
 function fingerprintSubtitleTracks(data: BilibiliPlayerData | null): string {
+	// 只比较语言集合：subtitle_url 带 auth_key 签名，每次请求必然不同，
+	// 纳入指纹会把所有正常字幕误判为"风控抖动"。
 	return JSON.stringify(
 		(data?.subtitle?.subtitles || [])
-			.map((track) => `${track.lan}|${track.subtitle_url || ""}`)
+			.map((track) => track.lan || "")
 			.sort(),
 	);
 }
