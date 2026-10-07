@@ -5,6 +5,7 @@ import Defuddle from "defuddle";
 import { getDomain, normalizeImageSources } from "./utils/string-utils";
 import { extractContentBySelector as extractContentBySelectorShared } from "./utils/shared";
 import { decodeAudioToWav } from "./utils/audio-wav-encoder";
+import { initTranscribeUi } from "./content-transcribe-ui";
 import { createMarkdownContent } from "defuddle/full";
 import { flattenShadowDom } from "./utils/flatten-shadow-dom";
 import { saveFile } from "./utils/file-utils";
@@ -889,4 +890,6 @@ declare global {
 			});
 		}
 	});
+
+	initTranscribeUi();
 })();

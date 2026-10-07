@@ -50,6 +50,39 @@
 	"appendToExisting": {
 		"message": "添加到现有笔记末尾"
 	},
+	"transcribeSectionTitle": {
+		"message": "AI 转写"
+	},
+	"transcribeSectionDesc": {
+		"message": "为无字幕的 B 站视频提供 AI 语音转写（SiliconFlow，国内直连）。在视频页右下角浮层手动触发，完成后重新剪藏即可使用。"
+	},
+	"transcribeApiKeyLabel": {
+		"message": "API Key"
+	},
+	"transcribeApiKeyDescription": {
+		"message": "在 SiliconFlow 控制台创建 API 密钥并粘贴至此。Qwen3-ASR 约 ¥0.81/小时音频，SenseVoiceSmall 免费。"
+	},
+	"transcribeModelLabel": {
+		"message": "转写模型"
+	},
+	"transcribeBaseUrlLabel": {
+		"message": "接口地址（高级）"
+	},
+	"transcribeBaseUrlDescription": {
+		"message": "OpenAI 兼容端点，一般无需修改。"
+	},
+	"transcribePanelButton": {
+		"message": "AI 转写字幕"
+	},
+	"transcribePanelRunning": {
+		"message": "转写中 $1/$2 块…"
+	},
+	"transcribePanelDone": {
+		"message": "转写完成，重新剪藏即可使用"
+	},
+	"transcribePanelCached": {
+		"message": "已有 AI 转写字幕"
+	},
 	"autoRunInterpreter": {
 		"message": "自动运行"
 	},

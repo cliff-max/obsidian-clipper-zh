@@ -50,6 +50,39 @@
 	"appendToExisting": {
 		"message": "Add to an existing note, at the bottom"
 	},
+	"transcribeSectionTitle": {
+		"message": "AI Transcription"
+	},
+	"transcribeSectionDesc": {
+		"message": "AI speech-to-text for Bilibili videos without subtitles (SiliconFlow, accessible in China). Trigger from the floating panel on the video page, then re-clip to use the result."
+	},
+	"transcribeApiKeyLabel": {
+		"message": "API Key"
+	},
+	"transcribeApiKeyDescription": {
+		"message": "Create an API key in the SiliconFlow console. Qwen3-ASR costs about ¥0.81 per hour of audio; SenseVoiceSmall is free."
+	},
+	"transcribeModelLabel": {
+		"message": "Transcription model"
+	},
+	"transcribeBaseUrlLabel": {
+		"message": "Base URL (advanced)"
+	},
+	"transcribeBaseUrlDescription": {
+		"message": "OpenAI-compatible endpoint. Usually no change needed."
+	},
+	"transcribePanelButton": {
+		"message": "Transcribe with AI"
+	},
+	"transcribePanelRunning": {
+		"message": "Transcribing $1/$2 chunks…"
+	},
+	"transcribePanelDone": {
+		"message": "Done. Re-clip the page to use the transcript."
+	},
+	"transcribePanelCached": {
+		"message": "AI transcript available"
+	},
 	"autoRunInterpreter": {
 		"message": "Automatically run"
 	},
