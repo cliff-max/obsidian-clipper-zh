@@ -687,42 +687,36 @@ browser.runtime.onMessage.addListener(
 					page?: number;
 					durationSec?: number;
 				};
-				(async () => {
+				// 转写是分钟级长任务：先同步校验并立即应答（消息通道撑不了几分钟），
+				// 任务本身 fire-and-forget，进度经状态轮询、结果经通知送达。
+				void (async () => {
 					const settings = await loadSettings();
 					const transcribeSettings =
 						settings.transcribe ?? DEFAULT_TRANSCRIBE_SETTINGS;
 					// 前置校验：key 未配置直接返回可读错误（浮层展示，不静默）
 					if (!transcribeSettings.apiKey) {
-						throw new Error(
-							"未配置 SiliconFlow API Key，请到设置 → AI 转写中填写",
-						);
-					}
-					return transcribeSettings;
-				})()
-					.then((transcribeSettings) =>
-						// cid 未知时由编排层自行经 view API 解析（含多 P 按 page 匹配）
-						startTranscribeTask({
-							bvid: transcribeRequest.bvid || "",
-							aid: transcribeRequest.aid ?? 0,
-							cid: transcribeRequest.cid ?? 0,
-							page: transcribeRequest.page ?? 1,
-							durationSec: transcribeRequest.durationSec ?? 0,
-							tabId: sender.tab?.id ?? -1,
-							settings: transcribeSettings,
-						}),
-					)
-					.then(() => {
-						sendResponse({ success: true });
-					})
-					.catch((error) => {
 						sendResponse({
 							success: false,
-							error:
-								error instanceof Error
-									? error.message
-									: String(error),
+							error: "未配置 SiliconFlow API Key，请到设置 → AI 转写中填写",
+						});
+						return;
+					}
+					sendResponse({ success: true, started: true });
+					// cid 未知时由编排层自行经 view API 解析（含多 P 按 page 匹配）
+					await startTranscribeTask({
+						bvid: transcribeRequest.bvid || "",
+						aid: transcribeRequest.aid ?? 0,
+						cid: transcribeRequest.cid ?? 0,
+						page: transcribeRequest.page ?? 1,
+						durationSec: transcribeRequest.durationSec ?? 0,
+						tabId: sender.tab?.id ?? -1,
+						settings: transcribeSettings,
+					}).catch((error) => {
+						bgLogger.warn("Transcribe task crashed", {
+							error: String(error),
 						});
 					});
+				})();
 				return true;
 			}
 

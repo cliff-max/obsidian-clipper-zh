@@ -1,4 +1,5 @@
 import type { TranscribeSettings } from "./types/types";
+import browser from "./utils/browser-polyfill";
 import { createLogger } from "./utils/logger";
 import {
 	buildChunkPlan,
@@ -217,14 +218,9 @@ async function resolveVideoInfo(
 	if (input.cid > 0) {
 		return { aid: input.aid, cid: input.cid, durationSec: 0 };
 	}
-	const browserModule = await import("./utils/browser-polyfill").catch(
-		() => null,
-	);
-	if (!browserModule) {
-		deps.notify("浏览器环境异常，无法开始转写");
-		return null;
-	}
-	const resp = (await browserModule.default.runtime.sendMessage({
+	// 注意：此处必须用静态 import 的 browser——动态 import() 会被 webpack
+	// 编译为异步 chunk，其运行时在 SW 中推断加载路径需要 document 而崩溃。
+	const resp = (await browser.runtime.sendMessage({
 		action: "fetchBilibiliJson",
 		url: `https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
 	})) as any;
