@@ -474,6 +474,11 @@ interface CachedTranscript {
 	createdAt: number;
 }
 
+/** AI 转写成品缓存的存储键（写读两侧统一使用）。 */
+export function transcriptCacheKey(bvid: string, cid: number): string {
+	return `biliTranscript:${bvid}:${cid}`;
+}
+
 /**
  * 读取 AI 转写成品缓存（background 转写任务写入 chrome.storage.local）。
  */
@@ -482,7 +487,7 @@ export async function readCachedTranscript(
 	cid: number,
 ): Promise<CachedTranscript | null> {
 	if (!bvid || !cid) return null;
-	const key = `biliTranscript:${bvid}:${cid}`;
+	const key = transcriptCacheKey(bvid, cid);
 	try {
 		const bag = (await browser.storage.local.get(key)) as Record<
 			string,

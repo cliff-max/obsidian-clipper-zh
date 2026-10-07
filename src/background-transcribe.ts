@@ -7,12 +7,24 @@ import {
 	findMoofOffsets,
 } from "./utils/bilibili-audio";
 import { transcribeAudioBlob } from "./utils/transcribe-client";
+import { transcriptCacheKey } from "./utils/bilibili-extractor";
 
 const logger = createLogger("Transcribe");
 
 /** ~5 分钟/块（64kbps → 8000 B/s） */
 export const CHUNK_TARGET_BYTES = 5 * 60 * 8000;
 const FALLBACK_MODEL = "FunAudioLLM/SenseVoiceSmall";
+const MAX_CONCURRENCY = 3;
+/** 转写 API 鉴权类失败的固定文案片段（见 transcribe-client）。 */
+const AUTH_FAILURE_HINT = "API Key 无效";
+
+/** 页面解码宿主丢失（视频页被关闭/导航），任务应暂停而非静默降级。 */
+export class TranscribeHostLostError extends Error {
+	constructor(message = "视频页已关闭") {
+		super(message);
+		this.name = "TranscribeHostLostError";
+	}
+}
 
 export interface TranscribeChunkResult {
 	startSec: number;
@@ -55,6 +67,12 @@ interface TaskDeps {
 	notify: (message: string) => void;
 }
 
+type ChunkOutcome = "ok" | "failed" | "host-lost" | "fatal";
+
+function isAuthFailure(error: unknown): boolean {
+	return String((error as Error)?.message || error).includes(AUTH_FAILURE_HINT);
+}
+
 /**
  * 拉取音频头部，扫描 moof 边界生成分块计划；头部无 fragment 时扩拉至 4MB。
  */
@@ -87,20 +105,29 @@ function defaultDeps(tabId: number): TaskDeps {
 		downloadRange: downloadAudioRange,
 		fetchPlan: fetchChunkPlan,
 		decodeWav: async (audio) => {
-			const resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(
-				tabId,
-				{ action: "decodeAudioToWav", audio },
-			)) as any;
+			let resp: any;
+			try {
+				resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(tabId, {
+					action: "decodeAudioToWav",
+					audio,
+				})) as any;
+			} catch (error) {
+				// tabs.sendMessage 拒绝 = 解码宿主（视频页）已丢失
+				throw new TranscribeHostLostError(
+					`RECEIVER_UNAVAILABLE: ${String(error)}`,
+				);
+			}
 			if (!resp?.success) throw new Error(resp?.error || "页面解码失败");
 			return resp.data;
 		},
 		transcribe: transcribeAudioBlob,
 		storageGet: async (key) => {
-			const area = (key.startsWith("transcribeTask:")
-				? (globalThis as any).chrome?.storage?.session
-				: (globalThis as any).chrome?.storage?.local) ?? {
-				get: async () => ({}),
-			};
+			const area =
+				(key.startsWith("transcribeTask:")
+					? (globalThis as any).chrome?.storage?.session
+					: (globalThis as any).chrome?.storage?.local) ?? {
+					get: async () => ({}),
+				};
 			const bag = await area.get(key);
 			return bag?.[key] ?? null;
 		},
@@ -121,22 +148,45 @@ function defaultDeps(tabId: number): TaskDeps {
 	};
 }
 
+export function transcribeTaskKey(bvid: string, cid: number): string {
+	return `transcribeTask:${bvid}:${cid}`;
+}
+
 export async function getTranscribeTaskStatus(
 	bvid: string,
 	cid: number,
 ): Promise<TranscribeTaskState | null> {
 	if (cid > 0) {
-		const key = `transcribeTask:${bvid}:${cid}`;
 		const bag = await (globalThis as any).chrome?.storage?.session?.get(
-			key,
+			transcribeTaskKey(bvid, cid),
 		);
-		return bag?.[key] ?? null;
+		return bag?.[transcribeTaskKey(bvid, cid)] ?? null;
 	}
-	// cid 未知（浮层）：按 bvid 前缀模糊匹配
+	// cid 未知（浮层）：先按 bvid 前缀匹配运行中任务，再查成品缓存
 	const all = await (globalThis as any).chrome?.storage?.session?.get(null);
 	const prefix = `transcribeTask:${bvid}:`;
 	for (const [key, value] of Object.entries(all ?? {})) {
 		if (key.startsWith(prefix)) return value as TranscribeTaskState;
+	}
+	const cached = await (globalThis as any).chrome?.storage?.local?.get(null);
+	const cachePrefix = `biliTranscript:${bvid}:`;
+	for (const key of Object.keys(cached ?? {})) {
+		if (key.startsWith(cachePrefix)) {
+			return {
+				bvid,
+				cid: 0,
+				aid: 0,
+				durationSec: 0,
+				model: "",
+				status: "done",
+				totalChunks: 0,
+				completedChunks: 0,
+				chunkResults: [],
+				chunkPlan: [],
+				audioUrl: "",
+				createdAt: 0,
+			};
+		}
 	}
 	return null;
 }
@@ -144,14 +194,52 @@ export async function getTranscribeTaskStatus(
 export function assembleTranscript(
 	state: TranscribeTaskState,
 ): TranscribeChunkResult[] {
-	const stepSec = state.durationSec / Math.max(1, state.totalChunks);
-	return state.chunkResults.map(
-		(chunk, index) =>
-			chunk ?? {
-				startSec: Math.round(index * stepSec),
-				text: `[第 ${index + 1} 段转写失败]`,
-			},
+	return state.chunkResults.map((chunk, index) => {
+		if (chunk) return chunk;
+		const planStart = state.chunkPlan[index]?.startSec;
+		const stepSec = state.durationSec / Math.max(1, state.totalChunks);
+		return {
+			startSec: Math.round(planStart ?? index * stepSec),
+			text: `[第 ${index + 1} 段转写失败]`,
+		};
+	});
+}
+
+/** 解析视频信息：cid 未知时经 view API，多 P 视频按 page 参数取对应分 P。 */
+async function resolveVideoInfo(
+	input: { bvid: string; aid: number; cid: number; page: number },
+	deps: TaskDeps,
+): Promise<{ aid: number; cid: number; durationSec: number } | null> {
+	if (input.cid > 0) {
+		return { aid: input.aid, cid: input.cid, durationSec: 0 };
+	}
+	const browserModule = await import("./utils/browser-polyfill").catch(
+		() => null,
 	);
+	if (!browserModule) {
+		deps.notify("浏览器环境异常，无法开始转写");
+		return null;
+	}
+	const resp = (await browserModule.default.runtime.sendMessage({
+		action: "fetchBilibiliJson",
+		url: `https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
+	})) as any;
+	const data = resp?.data?.data;
+	if (!data?.cid) {
+		deps.notify("未找到视频信息，无法开始转写");
+		return null;
+	}
+	// 多 P：按 page 匹配分 P cid，避免恒取 P1
+	const pages = Array.isArray(data.pages) ? data.pages : [];
+	const matched =
+		pages.find((p: any) => p.page === input.page) ??
+		pages[0];
+	const cid = matched?.cid ?? data.cid;
+	return {
+		cid,
+		aid: data.aid ?? input.aid,
+		durationSec: matched?.duration ?? data.duration ?? 0,
+	};
 }
 
 export async function startTranscribeTask(
@@ -159,6 +247,7 @@ export async function startTranscribeTask(
 		bvid: string;
 		aid: number;
 		cid: number;
+		page?: number;
 		durationSec: number;
 		tabId: number;
 		settings: TranscribeSettings;
@@ -172,33 +261,27 @@ export async function startTranscribeTask(
 		return;
 	}
 
-	// 浮层触发时 cid 未知：经 view API 解析视频信息
-	if (input.cid <= 0 && input.bvid) {
-		const browserModule = await import("./utils/browser-polyfill").catch(
-			() => null,
-		);
-		if (!browserModule) {
-			deps.notify("浏览器环境异常，无法开始转写");
-			return;
-		}
-		const resp = (await browserModule.default.runtime.sendMessage({
-			action: "fetchBilibiliJson",
-			url: `https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
-		})) as any;
-		const data = resp?.data?.data;
-		if (!data?.cid) {
-			deps.notify("未找到视频信息，无法开始转写");
-			return;
-		}
-		input = {
-			...input,
-			cid: data.cid,
-			aid: data.aid ?? input.aid,
-			durationSec: data.duration ?? input.durationSec,
-		};
+	const resolved = await resolveVideoInfo(
+		{
+			bvid: input.bvid,
+			aid: input.aid,
+			cid: input.cid,
+			page: input.page ?? 1,
+		},
+		deps,
+	);
+	if (!resolved) return;
+	const cid = resolved.cid;
+	const aid = resolved.aid;
+
+	const cacheKey = transcriptCacheKey(input.bvid, cid);
+	const cached = await deps.storageGet(cacheKey);
+	if (cached?.chunks?.length) {
+		deps.notify("该视频已有 AI 转写字幕，重新剪藏即可使用");
+		return;
 	}
 
-	const taskKey = `transcribeTask:${input.bvid}:${input.cid}`;
+	const taskKey = transcribeTaskKey(input.bvid, cid);
 	const existing = (await deps.storageGet(
 		taskKey,
 	)) as TranscribeTaskState | null;
@@ -209,20 +292,24 @@ export async function startTranscribeTask(
 		existing.status === "running" &&
 		existing.chunkPlan.length
 	) {
-		state = existing; // 断点续传
+		// 断点续传：保留块进度，但刷新签名音频 URL（可能已过期）
+		state = existing;
+		try {
+			const fresh = await deps.fetchStream({ aid, bvid: input.bvid, cid });
+			state.audioUrl = fresh.url;
+			await deps.storageSet(taskKey, state);
+		} catch (error) {
+			logger.warn("Resume stream refresh failed", { error: String(error) });
+		}
 	} else {
 		try {
-			const stream = await deps.fetchStream({
-				aid: input.aid,
-				bvid: input.bvid,
-				cid: input.cid,
-			});
+			const stream = await deps.fetchStream({ aid, bvid: input.bvid, cid });
 			const plan = await deps.fetchPlan(stream);
 			if (!plan.length) throw new Error("未解析到音频分片");
 			state = {
 				bvid: input.bvid,
-				cid: input.cid,
-				aid: input.aid,
+				cid,
+				aid,
 				durationSec: stream.durationSec || input.durationSec,
 				model: input.settings.model,
 				status: "running",
@@ -242,46 +329,47 @@ export async function startTranscribeTask(
 	}
 
 	(globalThis as any).chrome?.alarms?.create("transcribe-heartbeat", {
-		periodInMinutes: 0.3,
+		periodInMinutes: 0.5,
 	});
 
 	const initEnd = state.chunkPlan[0]?.start ?? 0;
 	let initBytes: ArrayBuffer | null = null;
-	for (let i = 0; i < state.chunkPlan.length; i++) {
-		if (state.chunkResults[i]) continue;
+	const getInitBytes = async (): Promise<ArrayBuffer> => {
+		if (initBytes === null) {
+			initBytes =
+				initEnd > 0
+					? await deps.downloadRange(state.audioUrl, 0, initEnd - 1)
+					: new ArrayBuffer(0);
+		}
+		return initBytes;
+	};
+
+	const runChunk = async (i: number): Promise<ChunkOutcome> => {
 		const chunk = state.chunkPlan[i];
 		try {
-			if (initBytes === null) {
-				initBytes =
-					initEnd > 0
-						? await deps.downloadRange(
-								state.audioUrl,
-								0,
-								initEnd - 1,
-							)
-						: new ArrayBuffer(0);
-			}
+			const init = await getInitBytes();
 			const raw = await deps.downloadRange(
 				state.audioUrl,
 				chunk.start,
 				chunk.end - 1,
 			);
-			const combined = new Uint8Array(
-				initBytes.byteLength + raw.byteLength,
-			);
-			combined.set(new Uint8Array(initBytes), 0);
-			combined.set(new Uint8Array(raw), initBytes.byteLength);
+			const combined = new Uint8Array(init.byteLength + raw.byteLength);
+			combined.set(new Uint8Array(init), 0);
+			combined.set(new Uint8Array(raw), init.byteLength);
 			let text: string;
 			try {
 				const wav = await deps.decodeWav(combined.buffer);
+				// wav 上传失败（429 耗尽/5xx/401）不降级——避免重复计费与静默混模型
 				text = await deps.transcribe(
 					wav,
 					"audio/wav",
 					`chunk-${i}.wav`,
 					input.settings,
 				);
-			} catch {
-				// Qwen3-ASR 仅接受 wav；解码失败降级 SenseVoiceSmall 直传 m4a
+			} catch (error) {
+				if (error instanceof TranscribeHostLostError) throw error;
+				if (isAuthFailure(error)) throw error;
+				// 仅"解码失败"降级 SenseVoiceSmall 直传 m4a（Qwen3-ASR 只接受 wav）
 				text = await deps.transcribe(
 					combined.buffer,
 					"audio/mp4",
@@ -289,21 +377,76 @@ export async function startTranscribeTask(
 					{ ...input.settings, model: FALLBACK_MODEL },
 				);
 			}
-			state.chunkResults[i] = {
-				startSec: chunk.startSec,
-				text: text.trim(),
-			};
+			state.chunkResults[i] = { startSec: chunk.startSec, text: text.trim() };
+			return "ok";
 		} catch (error) {
+			if (error instanceof TranscribeHostLostError) {
+				logger.warn(`Chunk ${i} host lost`, { error: String(error) });
+				return "host-lost";
+			}
+			if (isAuthFailure(error)) {
+				logger.warn(`Chunk ${i} auth failure`, { error: String(error) });
+				return "fatal";
+			}
 			logger.warn(`Chunk ${i} failed`, { error: String(error) });
 			state.chunkResults[i] = null;
+			return "failed";
 		}
+	};
+
+	// 并发 3 的 worker pool
+	let nextIndex = state.chunkResults.findIndex((r) => !r);
+	let stopped: ChunkOutcome | null = null;
+	const persistProgress = async () => {
 		state.completedChunks = state.chunkResults.filter(Boolean).length;
 		await deps.storageSet(taskKey, state);
+	};
+	const worker = async () => {
+		while (!stopped) {
+			const i = nextIndex;
+			nextIndex++;
+			if (i === undefined || i >= state.chunkPlan.length) return;
+			if (state.chunkResults[i]) continue;
+			const outcome = await runChunk(i);
+			await persistProgress();
+			if (outcome === "host-lost" || outcome === "fatal") {
+				stopped = outcome;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: MAX_CONCURRENCY }, () => worker()));
+
+	if (stopped === "host-lost") {
+		state.status = "failed";
+		state.error = "视频页已关闭";
+		await deps.storageSet(taskKey, state);
+		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		deps.notify("视频页已关闭，转写已暂停；请打开视频页后重新点击转写以续传");
+		return;
+	}
+	if (stopped === "fatal") {
+		state.status = "failed";
+		state.error = "API Key 无效或余额不足";
+		await deps.storageSet(taskKey, state);
+		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		deps.notify("转写失败：API Key 无效或余额不足，请到设置中检查");
+		return;
+	}
+
+	const completed = state.chunkResults.filter(Boolean).length;
+	if (completed === 0) {
+		// 全部失败：不写成品缓存，避免占位符污染剪藏
+		state.status = "failed";
+		state.error = "全部音频块转写失败";
+		await deps.storageSet(taskKey, state);
+		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		deps.notify("转写失败：所有音频块均未成功，请稍后重试");
+		return;
 	}
 
 	state.status = "done";
 	await deps.storageSet(taskKey, state);
-	await deps.storageSet(`biliTranscript:${input.bvid}:${input.cid}`, {
+	await deps.storageSet(cacheKey, {
 		model: state.model,
 		chunks: assembleTranscript(state),
 		createdAt: Date.now(),
