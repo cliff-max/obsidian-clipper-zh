@@ -70,7 +70,9 @@ interface TaskDeps {
 type ChunkOutcome = "ok" | "failed" | "host-lost" | "fatal";
 
 function isAuthFailure(error: unknown): boolean {
-	return String((error as Error)?.message || error).includes(AUTH_FAILURE_HINT);
+	return String((error as Error)?.message || error).includes(
+		AUTH_FAILURE_HINT,
+	);
 }
 
 /**
@@ -107,10 +109,13 @@ function defaultDeps(tabId: number): TaskDeps {
 		decodeWav: async (audio) => {
 			let resp: any;
 			try {
-				resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(tabId, {
-					action: "decodeAudioToWav",
-					audio,
-				})) as any;
+				resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(
+					tabId,
+					{
+						action: "decodeAudioToWav",
+						audio,
+					},
+				)) as any;
 			} catch (error) {
 				// tabs.sendMessage 拒绝 = 解码宿主（视频页）已丢失
 				throw new TranscribeHostLostError(
@@ -122,12 +127,11 @@ function defaultDeps(tabId: number): TaskDeps {
 		},
 		transcribe: transcribeAudioBlob,
 		storageGet: async (key) => {
-			const area =
-				(key.startsWith("transcribeTask:")
-					? (globalThis as any).chrome?.storage?.session
-					: (globalThis as any).chrome?.storage?.local) ?? {
-					get: async () => ({}),
-				};
+			const area = (key.startsWith("transcribeTask:")
+				? (globalThis as any).chrome?.storage?.session
+				: (globalThis as any).chrome?.storage?.local) ?? {
+				get: async () => ({}),
+			};
 			const bag = await area.get(key);
 			return bag?.[key] ?? null;
 		},
@@ -231,9 +235,7 @@ async function resolveVideoInfo(
 	}
 	// 多 P：按 page 匹配分 P cid，避免恒取 P1
 	const pages = Array.isArray(data.pages) ? data.pages : [];
-	const matched =
-		pages.find((p: any) => p.page === input.page) ??
-		pages[0];
+	const matched = pages.find((p: any) => p.page === input.page) ?? pages[0];
 	const cid = matched?.cid ?? data.cid;
 	return {
 		cid,
@@ -295,15 +297,25 @@ export async function startTranscribeTask(
 		// 断点续传：保留块进度，但刷新签名音频 URL（可能已过期）
 		state = existing;
 		try {
-			const fresh = await deps.fetchStream({ aid, bvid: input.bvid, cid });
+			const fresh = await deps.fetchStream({
+				aid,
+				bvid: input.bvid,
+				cid,
+			});
 			state.audioUrl = fresh.url;
 			await deps.storageSet(taskKey, state);
 		} catch (error) {
-			logger.warn("Resume stream refresh failed", { error: String(error) });
+			logger.warn("Resume stream refresh failed", {
+				error: String(error),
+			});
 		}
 	} else {
 		try {
-			const stream = await deps.fetchStream({ aid, bvid: input.bvid, cid });
+			const stream = await deps.fetchStream({
+				aid,
+				bvid: input.bvid,
+				cid,
+			});
 			const plan = await deps.fetchPlan(stream);
 			if (!plan.length) throw new Error("未解析到音频分片");
 			state = {
@@ -333,15 +345,19 @@ export async function startTranscribeTask(
 	});
 
 	const initEnd = state.chunkPlan[0]?.start ?? 0;
-	let initBytes: ArrayBuffer | null = null;
-	const getInitBytes = async (): Promise<ArrayBuffer> => {
-		if (initBytes === null) {
-			initBytes =
+	// 并发 worker 共享 init segment：单一 promise 缓存避免竞态重复下载
+	let initPromise: Promise<ArrayBuffer> | null = null;
+	const getInitBytes = (): Promise<ArrayBuffer> => {
+		if (!initPromise) {
+			initPromise = (async () =>
 				initEnd > 0
 					? await deps.downloadRange(state.audioUrl, 0, initEnd - 1)
-					: new ArrayBuffer(0);
+					: new ArrayBuffer(0))();
+			initPromise.catch(() => {
+				initPromise = null;
+			});
 		}
-		return initBytes;
+		return initPromise;
 	};
 
 	const runChunk = async (i: number): Promise<ChunkOutcome> => {
@@ -356,19 +372,17 @@ export async function startTranscribeTask(
 			const combined = new Uint8Array(init.byteLength + raw.byteLength);
 			combined.set(new Uint8Array(init), 0);
 			combined.set(new Uint8Array(raw), init.byteLength);
-			let text: string;
+			let wav: ArrayBuffer;
+			let decodeFailed = false;
 			try {
-				const wav = await deps.decodeWav(combined.buffer);
-				// wav 上传失败（429 耗尽/5xx/401）不降级——避免重复计费与静默混模型
-				text = await deps.transcribe(
-					wav,
-					"audio/wav",
-					`chunk-${i}.wav`,
-					input.settings,
-				);
+				wav = await deps.decodeWav(combined.buffer);
 			} catch (error) {
 				if (error instanceof TranscribeHostLostError) throw error;
-				if (isAuthFailure(error)) throw error;
+				decodeFailed = true;
+				wav = combined.buffer;
+			}
+			let text: string;
+			if (decodeFailed) {
 				// 仅"解码失败"降级 SenseVoiceSmall 直传 m4a（Qwen3-ASR 只接受 wav）
 				text = await deps.transcribe(
 					combined.buffer,
@@ -376,8 +390,19 @@ export async function startTranscribeTask(
 					`chunk-${i}.m4a`,
 					{ ...input.settings, model: FALLBACK_MODEL },
 				);
+			} else {
+				// wav 上传失败（429 耗尽/5xx/401）不降级，落到外层 catch
+				text = await deps.transcribe(
+					wav,
+					"audio/wav",
+					`chunk-${i}.wav`,
+					input.settings,
+				);
 			}
-			state.chunkResults[i] = { startSec: chunk.startSec, text: text.trim() };
+			state.chunkResults[i] = {
+				startSec: chunk.startSec,
+				text: text.trim(),
+			};
 			return "ok";
 		} catch (error) {
 			if (error instanceof TranscribeHostLostError) {
@@ -385,7 +410,9 @@ export async function startTranscribeTask(
 				return "host-lost";
 			}
 			if (isAuthFailure(error)) {
-				logger.warn(`Chunk ${i} auth failure`, { error: String(error) });
+				logger.warn(`Chunk ${i} auth failure`, {
+					error: String(error),
+				});
 				return "fatal";
 			}
 			logger.warn(`Chunk ${i} failed`, { error: String(error) });
@@ -421,7 +448,9 @@ export async function startTranscribeTask(
 		state.error = "视频页已关闭";
 		await deps.storageSet(taskKey, state);
 		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
-		deps.notify("视频页已关闭，转写已暂停；请打开视频页后重新点击转写以续传");
+		deps.notify(
+			"视频页已关闭，转写已暂停；请打开视频页后重新点击转写以续传",
+		);
 		return;
 	}
 	if (stopped === "fatal") {

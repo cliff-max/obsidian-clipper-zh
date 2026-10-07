@@ -2,7 +2,18 @@ import { describe, expect, test, vi } from "vitest";
 import {
 	assembleTranscript,
 	startTranscribeTask,
+	TranscribeHostLostError,
 } from "./background-transcribe";
+
+vi.mock("./utils/browser-polyfill", () => ({
+	default: {
+		runtime: {
+			sendMessage: vi.fn(),
+		},
+	},
+}));
+
+import browser from "./utils/browser-polyfill";
 
 const SETTINGS = {
 	enabled: true,
@@ -219,11 +230,20 @@ describe("review fixes", () => {
 			throw new Error("should not be called for m4a");
 		};
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 180, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 180,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		// 仅 wav 调用 3 次，绝不发起 m4a 直传
-		expect(calls.transcribe.filter((f) => f.endsWith(".wav"))).toHaveLength(3);
+		expect(calls.transcribe.filter((f) => f.endsWith(".wav"))).toHaveLength(
+			3,
+		);
 		expect(calls.transcribe.some((f) => f.endsWith(".m4a"))).toBe(false);
 		const task = store.get("transcribeTask:BV1x:2");
 		expect(task.chunkResults.every((c: any) => c === null)).toBe(true);
@@ -236,35 +256,51 @@ describe("review fixes", () => {
 			throw new Error("API Key 无效或余额不足");
 		};
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 180, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 180,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
-		// 401 快速失败：仅第一块即停，任务 failed，无成品缓存
-		expect(calls.transcribe).toHaveLength(1);
+		// 401 快速失败：并发窗口内最多 MAX_CONCURRENCY 个在飞请求，任务 failed，无成品缓存
+		expect(calls.transcribe.length).toBeLessThanOrEqual(3);
 		const task = store.get("transcribeTask:BV1x:2");
 		expect(task.status).toBe("failed");
 		expect(store.get("biliTranscript:BV1x:2")).toBeUndefined();
-		expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("API Key"));
+		expect(deps.notify).toHaveBeenCalledWith(
+			expect.stringContaining("API Key"),
+		);
 	});
 
 	test("host lost (page closed) pauses task with notice instead of silent fallback", async () => {
 		const { deps, calls, store } = makeDeps();
-		let wavCalls = 0;
 		deps.decodeWav = async () => {
-			wavCalls += 1;
-			if (wavCalls >= 1) throw new Error("RECEIVER_UNAVAILABLE: could not establish connection");
+			throw new TranscribeHostLostError("RECEIVER_UNAVAILABLE");
 		};
 		deps.transcribe = async () => {
 			throw new Error("should not transcribe when host lost");
 		};
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 180, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 180,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		const task = store.get("transcribeTask:BV1x:2");
 		expect(task.status).toBe("failed");
 		expect(store.get("biliTranscript:BV1x:2")).toBeUndefined();
-		expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("视频页"));
+		expect(deps.notify).toHaveBeenCalledWith(
+			expect.stringContaining("视频页"),
+		);
 	});
 
 	test("all chunks failed → status failed, no final cache, failure notice", async () => {
@@ -273,19 +309,31 @@ describe("review fixes", () => {
 			throw new Error("audio url expired 403");
 		};
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 180, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 180,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		const task = store.get("transcribeTask:BV1x:2");
 		expect(task.status).toBe("failed");
 		expect(store.get("biliTranscript:BV1x:2")).toBeUndefined();
-		expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("失败"));
+		expect(deps.notify).toHaveBeenCalledWith(
+			expect.stringContaining("失败"),
+		);
 	});
 
 	test("resume refreshes expired audioUrl via fetchStream while keeping progress", async () => {
 		const { deps, calls, store } = makeDeps();
 		const plan = [0, 1, 2, 3, 4].map((i) => ({
-			start: 100 + i * 8000, end: 100 + (i + 1) * 8000, startSec: i * 60, durationSec: 60,
+			start: 100 + i * 8000,
+			end: 100 + (i + 1) * 8000,
+			startSec: i * 60,
+			durationSec: 60,
 		}));
 		deps.fetchPlan = async () => plan;
 		let streamCalls = 0;
@@ -294,17 +342,40 @@ describe("review fixes", () => {
 			calls.playurl += 1;
 			return {
 				url: `https://upos.test/a-v${streamCalls}.m4s`,
-				sizeBytes: 40100, durationSec: 300, bitrateBps: 64000,
+				sizeBytes: 40100,
+				durationSec: 300,
+				bitrateBps: 64000,
 			};
 		};
 		store.set("transcribeTask:BV1x:3", {
-			bvid: "BV1x", cid: 3, aid: 1, durationSec: 300, model: SETTINGS.model,
-			status: "running", totalChunks: 5, completedChunks: 2,
-			chunkResults: [{ startSec: 0, text: "a" }, { startSec: 60, text: "b" }, null, null, null],
-			chunkPlan: plan, audioUrl: "https://upos.test/expired.m4s", createdAt: Date.now(),
+			bvid: "BV1x",
+			cid: 3,
+			aid: 1,
+			durationSec: 300,
+			model: SETTINGS.model,
+			status: "running",
+			totalChunks: 5,
+			completedChunks: 2,
+			chunkResults: [
+				{ startSec: 0, text: "a" },
+				{ startSec: 60, text: "b" },
+				null,
+				null,
+				null,
+			],
+			chunkPlan: plan,
+			audioUrl: "https://upos.test/expired.m4s",
+			createdAt: Date.now(),
 		});
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 3, durationSec: 300, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 3,
+				durationSec: 300,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		// resume 也重新取流（刷新签名 URL），且已完成块不重做
@@ -318,32 +389,68 @@ describe("review fixes", () => {
 
 	test("existing final cache short-circuits with notice and zero playurl", async () => {
 		const { deps, calls, store } = makeDeps();
-		store.set("biliTranscript:BV1x:2", { model: "m", chunks: [], createdAt: 1 });
+		store.set("biliTranscript:BV1x:2", {
+			model: "m",
+			chunks: [{ startSec: 0, text: "done" }],
+			createdAt: 1,
+		});
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 180, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 180,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		expect(calls.playurl).toBe(0);
 		expect(calls.ranges.length).toBe(0);
-		expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("已有"));
+		expect(deps.notify).toHaveBeenCalledWith(
+			expect.stringContaining("已有"),
+		);
 	});
 
 	test("resolves cid for multi-part video via page param", async () => {
 		const { deps, store } = makeDeps();
 		const browserModule = await import("./utils/browser-polyfill");
-		const sendMessage = vi.mocked(browserModule.default.runtime.sendMessage);
+		const sendMessage = vi.mocked(
+			browserModule.default.runtime.sendMessage,
+		);
 		sendMessage.mockReset();
 		sendMessage.mockImplementation(async (message: any) => {
-			if (message.action === "fetchBilibiliJson" && message.url.includes("/x/web-interface/view")) {
-				return { success: true, data: { code: 0, data: {
-					aid: 9, cid: 111,
-					pages: [{ page: 1, cid: 111 }, { page: 2, cid: 222 }],
-				} } };
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/view")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							aid: 9,
+							cid: 111,
+							pages: [
+								{ page: 1, cid: 111 },
+								{ page: 2, cid: 222 },
+							],
+						},
+					},
+				};
 			}
 			throw new Error(`unexpected ${message.action}`);
 		});
 		await startTranscribeTask(
-			{ bvid: "BV1mp", aid: 0, cid: 0, page: 2, durationSec: 0, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1mp",
+				aid: 0,
+				cid: 0,
+				page: 2,
+				durationSec: 0,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		const task = store.get("transcribeTask:BV1mp:222");
@@ -354,7 +461,10 @@ describe("review fixes", () => {
 	test("runs chunks with concurrency limit of 3", async () => {
 		const { deps, store } = makeDeps();
 		const plan = Array.from({ length: 6 }, (_, i) => ({
-			start: 100 + i * 8000, end: 100 + (i + 1) * 8000, startSec: i * 60, durationSec: 60,
+			start: 100 + i * 8000,
+			end: 100 + (i + 1) * 8000,
+			startSec: i * 60,
+			durationSec: 60,
 		}));
 		deps.fetchPlan = async () => plan;
 		let inFlight = 0;
@@ -368,7 +478,14 @@ describe("review fixes", () => {
 			return (origTranscribe as any)(...args);
 		};
 		await startTranscribeTask(
-			{ bvid: "BV1x", aid: 1, cid: 2, durationSec: 360, tabId: 7, settings: SETTINGS as any },
+			{
+				bvid: "BV1x",
+				aid: 1,
+				cid: 2,
+				durationSec: 360,
+				tabId: 7,
+				settings: SETTINGS as any,
+			},
 			deps,
 		);
 		expect(peak).toBe(3);

@@ -105,6 +105,7 @@ async function renderPanel(): Promise<void> {
 					bvid: parsed.bvid,
 					aid: 0,
 					cid: 0,
+					page: parsed.page,
 					durationSec: 0,
 				})
 				.then(() => poll(render))

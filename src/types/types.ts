@@ -1,7 +1,13 @@
 export interface Template {
 	id: string;
 	name: string;
-	behavior: 'create' | 'append-specific' | 'append-daily' | 'prepend-specific' | 'prepend-daily' | 'overwrite';
+	behavior:
+		| "create"
+		| "append-specific"
+		| "append-daily"
+		| "prepend-specific"
+		| "prepend-daily"
+		| "overwrite";
 	noteNameFormat: string;
 	path: string;
 	noteContentFormat: string;
@@ -50,7 +56,7 @@ export interface Rating {
 	date: string;
 }
 
-export type SaveBehavior = 'addToObsidian' | 'saveFile' | 'copyToClipboard';
+export type SaveBehavior = "addToObsidian" | "saveFile" | "copyToClipboard";
 
 export interface ReaderSettings {
 	fontSize: number;
@@ -58,7 +64,7 @@ export interface ReaderSettings {
 	maxWidth: number;
 	lightTheme: string;
 	darkTheme: string;
-	appearance: 'auto' | 'light' | 'dark';
+	appearance: "auto" | "light" | "dark";
 	fonts: string[];
 	defaultFont: string;
 	blendImages: boolean;
@@ -76,13 +82,21 @@ export interface TranscribeSettings {
 	baseUrl: string;
 }
 
+/** AI 转写设置的默认值（storage 默认 / 路由兜底 / 设置页回填统一引用）。 */
+export const DEFAULT_TRANSCRIBE_SETTINGS: TranscribeSettings = {
+	enabled: true,
+	apiKey: "",
+	model: "Qwen/Qwen3-ASR-1.7B",
+	baseUrl: "https://api.siliconflow.cn",
+};
+
 export interface Settings {
 	vaults: string[];
 	showMoreActionsButton: boolean;
 	betaFeatures: boolean;
 	legacyMode: boolean;
 	silentOpen: boolean;
-	openBehavior: 'popup' | 'embedded' | 'reader';
+	openBehavior: "popup" | "embedded" | "reader";
 	highlighterEnabled: boolean;
 	alwaysShowHighlights: boolean;
 	highlightBehavior: string;
@@ -103,7 +117,7 @@ export interface Settings {
 	};
 	history: HistoryEntry[];
 	ratings: Rating[];
-	saveBehavior: 'addToObsidian' | 'saveFile' | 'copyToClipboard';
+	saveBehavior: "addToObsidian" | "saveFile" | "copyToClipboard";
 }
 
 export interface ModelConfig {
@@ -117,7 +131,7 @@ export interface ModelConfig {
 export interface HistoryEntry {
 	datetime: string;
 	url: string;
-	action: 'addToObsidian' | 'saveFile' | 'copyToClipboard' | 'share';
+	action: "addToObsidian" | "saveFile" | "copyToClipboard" | "share";
 	title?: string;
 	vault?: string;
 	path?: string;

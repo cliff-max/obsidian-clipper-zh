@@ -7,7 +7,7 @@ import {
 } from "./utils/active-tab-manager";
 import { TextHighlightData } from "./utils/highlighter";
 import { debounce } from "./utils/debounce";
-import { Settings } from "./types/types";
+import { Settings, DEFAULT_TRANSCRIBE_SETTINGS } from "./types/types";
 import {
 	getTranscribeTaskStatus,
 	startTranscribeTask,
@@ -684,25 +684,20 @@ browser.runtime.onMessage.addListener(
 					bvid?: string;
 					aid?: number;
 					cid?: number;
+					page?: number;
 					durationSec?: number;
 				};
 				(async () => {
 					const settings = await loadSettings();
-					return (
-						settings.transcribe ?? {
-							enabled: false,
-							apiKey: "",
-							model: "Qwen/Qwen3-ASR-1.7B",
-							baseUrl: "https://api.siliconflow.cn",
-						}
-					);
+					return settings.transcribe ?? DEFAULT_TRANSCRIBE_SETTINGS;
 				})()
 					.then((transcribeSettings) =>
-						// cid 未知时由编排层自行经 view API 解析
+						// cid 未知时由编排层自行经 view API 解析（含多 P 按 page 匹配）
 						startTranscribeTask({
 							bvid: transcribeRequest.bvid || "",
 							aid: transcribeRequest.aid ?? 0,
 							cid: transcribeRequest.cid ?? 0,
+							page: transcribeRequest.page ?? 1,
 							durationSec: transcribeRequest.durationSec ?? 0,
 							tabId: sender.tab?.id ?? -1,
 							settings: transcribeSettings,
@@ -1786,6 +1781,13 @@ browser.runtime.onMessage.addListener(
 		return undefined;
 	},
 );
+
+// 转写任务保活心跳：事件有监听者才能在 SW 休眠后被唤醒
+browser.alarms?.onAlarm?.addListener?.((alarm: { name: string }) => {
+	if (alarm.name === "transcribe-heartbeat") {
+		bgLogger.info("Transcribe heartbeat");
+	}
+});
 
 browser.commands.onCommand.addListener(async (command, tab) => {
 	// Some browsers (e.g. Orion) don't pass the tab parameter, so fall back to querying

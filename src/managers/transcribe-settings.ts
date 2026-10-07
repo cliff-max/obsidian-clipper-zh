@@ -1,4 +1,5 @@
 import { loadSettings, saveSettings } from "../utils/storage-utils";
+import { DEFAULT_TRANSCRIBE_SETTINGS } from "../types/types";
 
 /**
  * 「AI 转写」设置区块：SiliconFlow API Key / 模型 / 端点。
@@ -17,12 +18,7 @@ export function initTranscribeSettings(): void {
 
 	void (async () => {
 		const settings = await loadSettings();
-		const t = settings.transcribe ?? {
-			enabled: true,
-			apiKey: "",
-			model: "Qwen/Qwen3-ASR-1.7B",
-			baseUrl: "https://api.siliconflow.cn",
-		};
+		const t = settings.transcribe ?? DEFAULT_TRANSCRIBE_SETTINGS;
 		apiKey.value = t.apiKey;
 		model.value = t.model;
 		baseUrl.value = t.baseUrl;
@@ -31,10 +27,11 @@ export function initTranscribeSettings(): void {
 	const persist = async () => {
 		const settings = await loadSettings();
 		settings.transcribe = {
-			enabled: true,
+			...DEFAULT_TRANSCRIBE_SETTINGS,
 			apiKey: apiKey.value.trim(),
 			model: model.value,
-			baseUrl: baseUrl.value.trim() || "https://api.siliconflow.cn",
+			baseUrl:
+				baseUrl.value.trim() || DEFAULT_TRANSCRIBE_SETTINGS.baseUrl,
 		};
 		await saveSettings(settings);
 	};
