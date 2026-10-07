@@ -1,6 +1,7 @@
 import browser from "./utils/browser-polyfill";
 import { getMessage } from "./utils/i18n";
 import {
+	TRANSCRIBE_NEED_EVENT,
 	TRANSCRIBE_NEED_PREFIX,
 	isBilibiliVideoUrl,
 	parseBilibiliUrl,
@@ -27,6 +28,8 @@ export function initTranscribeUi(): void {
 	} else {
 		mount();
 	}
+	// 剪藏刚确认"无字幕"（标记变化）：无需刷新页面，浮层立即重挂
+	window.addEventListener(TRANSCRIBE_NEED_EVENT, mount);
 	// SPA 切集：URL 变化时重挂
 	let lastHref = location.href;
 	setInterval(() => {

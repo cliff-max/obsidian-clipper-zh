@@ -115,6 +115,12 @@ interface StorageData {
 		defaultPromptContext?: string;
 	};
 	property_types?: PropertyType[];
+	transcribe_settings?: {
+		enabled?: boolean;
+		apiKey?: string;
+		model?: string;
+		baseUrl?: string;
+	};
 	stats?: {
 		addToObsidian: number;
 		saveFile: number;
@@ -252,6 +258,16 @@ export async function loadSettings(): Promise<Settings> {
 		defaultPromptContext:
 			data.interpreter_settings?.defaultPromptContext ||
 			defaultSettings.defaultPromptContext,
+		transcribe: {
+			enabled: data.transcribe_settings?.enabled ?? true,
+			apiKey: data.transcribe_settings?.apiKey || "",
+			model:
+				data.transcribe_settings?.model ||
+				DEFAULT_TRANSCRIBE_SETTINGS.model,
+			baseUrl:
+				data.transcribe_settings?.baseUrl ||
+				DEFAULT_TRANSCRIBE_SETTINGS.baseUrl,
+		},
 		propertyTypes: data.property_types || defaultSettings.propertyTypes,
 		readerSettings: {
 			fontSize:
@@ -341,6 +357,7 @@ export async function saveSettings(
 			defaultPromptContext: generalSettings.defaultPromptContext,
 		},
 		property_types: generalSettings.propertyTypes,
+		transcribe_settings: generalSettings.transcribe,
 		reader_settings: {
 			fontSize: generalSettings.readerSettings.fontSize,
 			lineHeight: generalSettings.readerSettings.lineHeight,

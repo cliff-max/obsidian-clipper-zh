@@ -488,6 +488,9 @@ export function transcriptCacheKey(bvid: string, cid: number): string {
 /** "需 AI 转写"标记的存储键前缀（剪藏确认无字幕后写入，浮层据此显隐）。 */
 export const TRANSCRIBE_NEED_PREFIX = "biliNeedsTranscribe:";
 
+/** 标记变化时广播的事件名（content script 内部，浮层监听后立即重挂）。 */
+export const TRANSCRIBE_NEED_EVENT = "obsidian-clipper-transcribe-need";
+
 /**
  * 维护"需 AI 转写"标记：needed 为 true 时置位，否则清除。
  */
@@ -508,8 +511,11 @@ async function markTranscribeNeed(
 				(existing as Record<string, unknown>)[key] !== undefined
 			) {
 				await browser.storage.local.remove(key);
+			} else {
+				return;
 			}
 		}
+		window.dispatchEvent(new CustomEvent(TRANSCRIBE_NEED_EVENT));
 	} catch {
 		// 标记维护失败不影响剪藏主流程
 	}
