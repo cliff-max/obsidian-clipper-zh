@@ -388,6 +388,24 @@ export async function extractBilibiliStructuredContent(
 		subtitleStable,
 		transcriptImplausible,
 	);
+	// 无可信字幕轨时回退 AI 转写缓存（由 background 转写任务生成）
+	let finalNotice = subtitleNotice;
+	if (!transcript.length) {
+		const cached = await readCachedTranscript(
+			viewData.bvid || parsedUrl.bvid || "",
+			resolvedPage.cid,
+		);
+		if (cached?.chunks?.length) {
+			transcript = cached.chunks
+				.map((chunk) => ({
+					from: chunk.startSec,
+					to: chunk.startSec + 600,
+					content: chunk.text,
+				}))
+				.filter((cue) => cue.content.trim().length > 0);
+			finalNotice = `以下内容由 AI 语音转写生成（模型 ${cached.model}），可能存在识别误差`;
+		}
+	}
 	const transcriptText = transcript.map((cue) => cue.content).join("\n");
 	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
 		transcript,
@@ -415,7 +433,7 @@ export async function extractBilibiliStructuredContent(
 		description,
 		chapters,
 		transcript,
-		subtitleNotice,
+		subtitleNotice: finalNotice,
 	});
 	const wordCount = `${description}\n${transcriptText}`
 		.trim()
@@ -441,13 +459,39 @@ export async function extractBilibiliStructuredContent(
 		page: resolvedPage.page,
 		chapters,
 		transcript,
-		subtitleNotice,
+		subtitleNotice: finalNotice,
 		transcriptText,
 		transcriptMarkdown,
 		chaptersMarkdown,
 		structuredHtml,
 		wordCount,
 	};
+}
+
+interface CachedTranscript {
+	model: string;
+	chunks: Array<{ startSec: number; text: string }>;
+	createdAt: number;
+}
+
+/**
+ * 读取 AI 转写成品缓存（background 转写任务写入 chrome.storage.local）。
+ */
+export async function readCachedTranscript(
+	bvid: string,
+	cid: number,
+): Promise<CachedTranscript | null> {
+	if (!bvid || !cid) return null;
+	const key = `biliTranscript:${bvid}:${cid}`;
+	try {
+		const bag = (await browser.storage.local.get(key)) as Record<
+			string,
+			CachedTranscript
+		>;
+		return bag?.[key] ?? null;
+	} catch {
+		return null;
+	}
 }
 
 /**

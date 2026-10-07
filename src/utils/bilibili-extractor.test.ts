@@ -934,3 +934,153 @@ describe("bilibili extractor", () => {
 		expect(content?.subtitleNotice).toContain("字幕内容拉取失败");
 	});
 });
+
+describe("AI transcript cache injection", () => {
+	function mockNoSubtitlePages(storageData: Map<string, any>) {
+		const sendMessage = vi.mocked(browser.runtime.sendMessage);
+		sendMessage.mockReset();
+		sendMessage.mockImplementation(async (message: any) => {
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/view")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							aid: 123,
+							bvid: "BV1aiTrans1",
+							title: "转写注入视频",
+							desc: "简介",
+							cid: 456,
+							pages: [
+								{
+									page: 1,
+									cid: 456,
+									duration: 6646,
+									part: "P1",
+								},
+							],
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/web-interface/nav")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							wbi_img: {
+								img_url:
+									"https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+								sub_url:
+									"https://i0.hdslb.com/bfs/wbi/4932caff0ff74675b6ecd3d1519e7b76.png",
+							},
+						},
+					},
+				};
+			}
+			if (
+				message.action === "fetchBilibiliJson" &&
+				message.url.includes("/x/player/")
+			) {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: { subtitle: { subtitles: [] }, view_points: [] },
+					},
+				};
+			}
+			if (message.action === "fetchBilibiliJsonWithCookies") {
+				return {
+					success: true,
+					data: {
+						code: 0,
+						data: {
+							login_mid: 1,
+							subtitle: { subtitles: [] },
+							view_points: [],
+						},
+					},
+				};
+			}
+			throw new Error(`Unexpected ${message.action}`);
+		});
+		(browser as any).storage = {
+			local: {
+				get: async (k: string) =>
+					storageData.has(k) ? { [k]: storageData.get(k) } : {},
+				set: async () => {},
+			},
+		};
+	}
+
+	function cleanupStorageMock() {
+		delete (browser as any).storage;
+	}
+
+	test("injects cached AI transcript when no subtitle track exists", async () => {
+		const storageData = new Map([
+			[
+				"biliTranscript:BV1aiTrans1:456",
+				{
+					model: "Qwen/Qwen3-ASR-1.7B",
+					createdAt: 1,
+					chunks: [
+						{ startSec: 0, text: "第一块文本" },
+						{ startSec: 300, text: "第二块文本" },
+					],
+				},
+			],
+		]);
+		mockNoSubtitlePages(storageData);
+		const { document: doc } = parseHTML(
+			"<html><head><title>Bilibili</title></head><body></body></html>",
+		);
+		Object.defineProperty(doc, "URL", {
+			value: "https://www.bilibili.com/video/BV1aiTrans1/",
+			configurable: true,
+		});
+		const content = await extractBilibiliStructuredContent(
+			doc as unknown as Document,
+		);
+		cleanupStorageMock();
+		expect(content?.transcriptText).toContain("第一块文本");
+		expect(content?.transcriptText).toContain("第二块文本");
+		expect(content?.subtitleNotice).toContain("AI 语音转写");
+		expect(content?.subtitleNotice).toContain("Qwen3-ASR");
+	});
+
+	test("does not hit cache for a different cid", async () => {
+		const storageData = new Map([
+			[
+				"biliTranscript:BV1aiTrans1:999",
+				{
+					model: "Qwen/Qwen3-ASR-1.7B",
+					createdAt: 1,
+					chunks: [{ startSec: 0, text: "别的分P" }],
+				},
+			],
+		]);
+		mockNoSubtitlePages(storageData);
+		const { document: doc } = parseHTML(
+			"<html><head><title>Bilibili</title></head><body></body></html>",
+		);
+		Object.defineProperty(doc, "URL", {
+			value: "https://www.bilibili.com/video/BV1aiTrans1/",
+			configurable: true,
+		});
+		const content = await extractBilibiliStructuredContent(
+			doc as unknown as Document,
+		);
+		cleanupStorageMock();
+		expect(content?.transcript).toHaveLength(0);
+		expect(content?.subtitleNotice).not.toContain("AI 语音转写");
+	});
+});
