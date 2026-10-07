@@ -172,6 +172,32 @@ export async function startTranscribeTask(
 		return;
 	}
 
+	// 浮层触发时 cid 未知：经 view API 解析视频信息
+	if (input.cid <= 0 && input.bvid) {
+		const browserModule = await import("./utils/browser-polyfill").catch(
+			() => null,
+		);
+		if (!browserModule) {
+			deps.notify("浏览器环境异常，无法开始转写");
+			return;
+		}
+		const resp = (await browserModule.default.runtime.sendMessage({
+			action: "fetchBilibiliJson",
+			url: `https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
+		})) as any;
+		const data = resp?.data?.data;
+		if (!data?.cid) {
+			deps.notify("未找到视频信息，无法开始转写");
+			return;
+		}
+		input = {
+			...input,
+			cid: data.cid,
+			aid: data.aid ?? input.aid,
+			durationSec: data.duration ?? input.durationSec,
+		};
+	}
+
 	const taskKey = `transcribeTask:${input.bvid}:${input.cid}`;
 	const existing = (await deps.storageGet(
 		taskKey,

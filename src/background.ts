@@ -8,6 +8,11 @@ import {
 import { TextHighlightData } from "./utils/highlighter";
 import { debounce } from "./utils/debounce";
 import { Settings } from "./types/types";
+import {
+	getTranscribeTaskStatus,
+	startTranscribeTask,
+} from "./background-transcribe";
+import { loadSettings } from "./utils/storage-utils";
 import { createLogger } from "./utils/logger";
 
 const bgLogger = createLogger("Background");
@@ -673,6 +678,85 @@ browser.runtime.onMessage.addListener(
 				return true;
 			}
 
+			if (typedRequest.action === "startBilibiliTranscribe") {
+				const transcribeRequest = typedRequest as {
+					action: string;
+					bvid?: string;
+					aid?: number;
+					cid?: number;
+					durationSec?: number;
+				};
+				(async () => {
+					const settings = await loadSettings();
+					return (
+						settings.transcribe ?? {
+							enabled: false,
+							apiKey: "",
+							model: "Qwen/Qwen3-ASR-1.7B",
+							baseUrl: "https://api.siliconflow.cn",
+						}
+					);
+				})()
+					.then((transcribeSettings) =>
+						// cid 未知时由编排层自行经 view API 解析
+						startTranscribeTask({
+							bvid: transcribeRequest.bvid || "",
+							aid: transcribeRequest.aid ?? 0,
+							cid: transcribeRequest.cid ?? 0,
+							durationSec: transcribeRequest.durationSec ?? 0,
+							tabId: sender.tab?.id ?? -1,
+							settings: transcribeSettings,
+						}),
+					)
+					.then(() => {
+						sendResponse({ success: true });
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						});
+					});
+				return true;
+			}
+
+			if (typedRequest.action === "getBilibiliTranscribeStatus") {
+				const statusRequest = typedRequest as {
+					action: string;
+					bvid?: string;
+					cid?: number;
+				};
+				getTranscribeTaskStatus(
+					statusRequest.bvid || "",
+					statusRequest.cid ?? 0,
+				)
+					.then((state) => {
+						sendResponse(
+							state
+								? {
+										success: true,
+										status: state.status,
+										completedChunks: state.completedChunks,
+										totalChunks: state.totalChunks,
+									}
+								: { success: true, status: null },
+						);
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						});
+					});
+				return true;
+			}
+
 			if (
 				typedRequest.action === "copy-to-clipboard" &&
 				typedRequest.text
@@ -1099,9 +1183,7 @@ browser.runtime.onMessage.addListener(
 									.then(function (res: Response) {
 										return res.json();
 									})
-									.then(function (
-										data: any,
-									):
+									.then(function (data: any):
 										| Promise<{
 												success: true;
 												results: Record<string, string>;
