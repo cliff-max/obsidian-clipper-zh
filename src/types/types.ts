@@ -69,6 +69,13 @@ export interface ReaderSettings {
 	customCss: string;
 }
 
+export interface TranscribeSettings {
+	enabled: boolean;
+	apiKey: string;
+	model: string;
+	baseUrl: string;
+}
+
 export interface Settings {
 	vaults: string[];
 	showMoreActionsButton: boolean;
@@ -86,6 +93,7 @@ export interface Settings {
 	interpreterAutoRun: boolean;
 	defaultPromptContext: string;
 	propertyTypes: PropertyType[];
+	transcribe?: TranscribeSettings;
 	readerSettings: ReaderSettings;
 	stats: {
 		addToObsidian: number;

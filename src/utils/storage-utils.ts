@@ -22,6 +22,12 @@ export let generalSettings: Settings = {
 	interpreterAutoRun: false,
 	defaultPromptContext: '',
 	propertyTypes: [],
+	transcribe: {
+		enabled: false,
+		apiKey: '',
+		model: 'Qwen/Qwen3-ASR-1.7B',
+		baseUrl: 'https://api.siliconflow.cn'
+	},
 	readerSettings: {
 		fontSize: 16,
 		lineHeight: 1.6,
