@@ -689,7 +689,15 @@ browser.runtime.onMessage.addListener(
 				};
 				(async () => {
 					const settings = await loadSettings();
-					return settings.transcribe ?? DEFAULT_TRANSCRIBE_SETTINGS;
+					const transcribeSettings =
+						settings.transcribe ?? DEFAULT_TRANSCRIBE_SETTINGS;
+					// 前置校验：key 未配置直接返回可读错误（浮层展示，不静默）
+					if (!transcribeSettings.apiKey) {
+						throw new Error(
+							"未配置 SiliconFlow API Key，请到设置 → AI 转写中填写",
+						);
+					}
+					return transcribeSettings;
 				})()
 					.then((transcribeSettings) =>
 						// cid 未知时由编排层自行经 view API 解析（含多 P 按 page 匹配）

@@ -80,6 +80,9 @@
 	"transcribePanelDone": {
 		"message": "转写完成，重新剪藏即可使用"
 	},
+	"transcribePanelFailed": {
+		"message": "转写失败"
+	},
 	"transcribePanelCached": {
 		"message": "已有 AI 转写字幕"
 	},

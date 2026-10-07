@@ -80,6 +80,9 @@
 	"transcribePanelDone": {
 		"message": "Done. Re-clip the page to use the transcript."
 	},
+	"transcribePanelFailed": {
+		"message": "Transcription failed"
+	},
 	"transcribePanelCached": {
 		"message": "AI transcript available"
 	},

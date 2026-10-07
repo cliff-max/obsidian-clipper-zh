@@ -11,17 +11,14 @@
 		"clipboardWrite",
 		"commands",
 		"contextMenus",
+		"notifications",
 		"sidePanel",
 		"storage",
 		"scripting",
 		"declarativeNetRequest",
 		"cookies"
 	],
-	"host_permissions": [
-		"<all_urls>",
-		"http://*/*",
-		"https://*/*"
-	],
+	"host_permissions": ["<all_urls>", "http://*/*", "https://*/*"],
 	"action": {
 		"default_popup": "popup.html"
 	},
@@ -48,9 +45,17 @@
 	],
 	"web_accessible_resources": [
 		{
-			"resources": ["reader.css", "reader-script.js", "browser-polyfill.min.js", "style.css", "side-panel.html", "flatten-shadow-dom.js", "highlighter.css"],
+			"resources": [
+				"reader.css",
+				"reader-script.js",
+				"browser-polyfill.min.js",
+				"style.css",
+				"side-panel.html",
+				"flatten-shadow-dom.js",
+				"highlighter.css"
+			],
 			"extension_ids": ["*"],
-			"matches": [ "*://*/*" ]
+			"matches": ["*://*/*"]
 		}
 	],
 	"content_security_policy": {

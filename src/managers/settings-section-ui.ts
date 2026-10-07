@@ -86,6 +86,7 @@ export function initializeSidebar(): void {
 				section === "properties" ||
 				section === "highlighter" ||
 				section === "interpreter" ||
+				section === "transcribe" ||
 				section === "reader"
 			) {
 				showSettingsSection(
@@ -94,6 +95,7 @@ export function initializeSidebar(): void {
 						| "properties"
 						| "highlighter"
 						| "interpreter"
+						| "transcribe"
 						| "reader",
 				);
 			}
