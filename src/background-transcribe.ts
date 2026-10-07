@@ -1,5 +1,7 @@
 import type { TranscribeSettings } from "./types/types";
+import { DEFAULT_TRANSCRIBE_SETTINGS } from "./types/types";
 import browser from "./utils/browser-polyfill";
+import { loadSettings } from "./utils/storage-utils";
 import { createLogger } from "./utils/logger";
 import {
 	buildChunkPlan,
@@ -49,9 +51,16 @@ export interface TranscribeTaskState {
 		durationSec: number;
 	}>;
 	audioUrl: string;
+	/** 解码宿主页（恢复中断任务时重连）。 */
+	tabId?: number;
 	error?: string;
 	createdAt: number;
 }
+
+/** 心跳键前缀：任务循环每块更新时间戳，过期即视为被 SW 休眠杀死。 */
+export const TRANSCRIBE_HEARTBEAT_PREFIX = "transcribeHeartbeat:";
+/** 心跳超过该时长未更新，判定任务已死，由 alarm 唤醒恢复。 */
+export const TRANSCRIBE_HEARTBEAT_STALE_MS = 90 * 1000;
 
 interface TaskDeps {
 	fetchStream: typeof fetchBilibiliAudioStream;
@@ -210,6 +219,56 @@ export function assembleTranscript(
 	});
 }
 
+/**
+ * alarm 唤醒时扫描心跳：超过阈值未更新的 running 任务视为被 SW 休眠杀死，
+ * 从断点自动恢复（含重新获取签名音频 URL）。
+ */
+export async function resumeInterruptedTranscribe(): Promise<void> {
+	const session = (globalThis as any).chrome?.storage?.session;
+	if (!session) return;
+	const all = (await session.get(null)) as Record<string, unknown>;
+	const now = Date.now();
+	for (const [key, stamp] of Object.entries(all)) {
+		if (!key.startsWith(TRANSCRIBE_HEARTBEAT_PREFIX)) continue;
+		if (typeof stamp !== "number") continue;
+		if (now - stamp < TRANSCRIBE_HEARTBEAT_STALE_MS) continue;
+		const taskKey = key.replace(
+			TRANSCRIBE_HEARTBEAT_PREFIX,
+			"transcribeTask:",
+		);
+		const bag = (await session.get(taskKey)) as Record<
+			string,
+			TranscribeTaskState
+		>;
+		const state = bag?.[taskKey];
+		if (!state || state.status !== "running") {
+			await session.remove(key);
+			continue;
+		}
+		logger.info("Resuming interrupted transcribe", {
+			bvid: state.bvid,
+			completed: state.completedChunks,
+			total: state.totalChunks,
+		});
+		const settings = await loadSettings();
+		const transcribeSettings =
+			settings.transcribe ??
+			({ ...DEFAULT_TRANSCRIBE_SETTINGS } as TranscribeSettings);
+		await startTranscribeTask({
+			bvid: state.bvid,
+			aid: state.aid,
+			cid: state.cid,
+			page: 1,
+			durationSec: state.durationSec,
+			tabId: state.tabId ?? -1,
+			settings: transcribeSettings,
+		}).catch((error) => {
+			logger.warn("Resume failed", { error: String(error) });
+		});
+		return; // 一次只恢复一个（alarm 每 30s 会再触发）
+	}
+}
+
 /** 解析视频信息：cid 未知时经 view API，多 P 视频按 page 参数取对应分 P。 */
 async function resolveVideoInfo(
 	input: { bvid: string; aid: number; cid: number; page: number },
@@ -292,6 +351,7 @@ export async function startTranscribeTask(
 	) {
 		// 断点续传：保留块进度，但刷新签名音频 URL（可能已过期）
 		state = existing;
+		state.tabId = input.tabId;
 		try {
 			const fresh = await deps.fetchStream({
 				aid,
@@ -326,6 +386,7 @@ export async function startTranscribeTask(
 				chunkResults: plan.map(() => null),
 				chunkPlan: plan,
 				audioUrl: stream.url,
+				tabId: input.tabId,
 				createdAt: Date.now(),
 			};
 			await deps.storageSet(taskKey, state);
@@ -420,10 +481,16 @@ export async function startTranscribeTask(
 	// 并发 3 的 worker pool
 	let nextIndex = state.chunkResults.findIndex((r) => !r);
 	let stopped: ChunkOutcome | null = null;
+	const heartbeatKey = `${TRANSCRIBE_HEARTBEAT_PREFIX}${input.bvid}:${cid}`;
 	const persistProgress = async () => {
 		state.completedChunks = state.chunkResults.filter(Boolean).length;
 		await deps.storageSet(taskKey, state);
+		// 心跳：alarm 唤醒时据此判断任务是否已被 SW 休眠杀死
+		await (globalThis as any).chrome?.storage?.session?.set({
+			[heartbeatKey]: Date.now(),
+		});
 	};
+	await persistProgress();
 	const worker = async () => {
 		while (!stopped) {
 			const i = nextIndex;
@@ -444,6 +511,9 @@ export async function startTranscribeTask(
 		state.error = "视频页已关闭";
 		await deps.storageSet(taskKey, state);
 		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		await (globalThis as any).chrome?.storage?.session?.remove(
+			heartbeatKey,
+		);
 		deps.notify(
 			"视频页已关闭，转写已暂停；请打开视频页后重新点击转写以续传",
 		);
@@ -454,6 +524,9 @@ export async function startTranscribeTask(
 		state.error = "API Key 无效或余额不足";
 		await deps.storageSet(taskKey, state);
 		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		await (globalThis as any).chrome?.storage?.session?.remove(
+			heartbeatKey,
+		);
 		deps.notify("转写失败：API Key 无效或余额不足，请到设置中检查");
 		return;
 	}
@@ -465,6 +538,9 @@ export async function startTranscribeTask(
 		state.error = "全部音频块转写失败";
 		await deps.storageSet(taskKey, state);
 		(globalThis as any).chrome?.alarms?.clear("transcribe-heartbeat");
+		await (globalThis as any).chrome?.storage?.session?.remove(
+			heartbeatKey,
+		);
 		deps.notify("转写失败：所有音频块均未成功，请稍后重试");
 		return;
 	}

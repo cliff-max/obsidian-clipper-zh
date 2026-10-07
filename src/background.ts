@@ -10,6 +10,7 @@ import { debounce } from "./utils/debounce";
 import { Settings, DEFAULT_TRANSCRIBE_SETTINGS } from "./types/types";
 import {
 	getTranscribeTaskStatus,
+	resumeInterruptedTranscribe,
 	startTranscribeTask,
 } from "./background-transcribe";
 import { loadSettings } from "./utils/storage-utils";
@@ -1784,10 +1785,10 @@ browser.runtime.onMessage.addListener(
 	},
 );
 
-// 转写任务保活心跳：事件有监听者才能在 SW 休眠后被唤醒
+// 转写任务保活心跳：SW 被休眠杀死后由 alarm 唤醒，自动从断点恢复任务
 browser.alarms?.onAlarm?.addListener?.((alarm: { name: string }) => {
 	if (alarm.name === "transcribe-heartbeat") {
-		bgLogger.info("Transcribe heartbeat");
+		void resumeInterruptedTranscribe();
 	}
 });
 
