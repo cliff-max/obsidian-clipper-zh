@@ -13,7 +13,15 @@ vi.mock("./utils/browser-polyfill", () => ({
 	},
 }));
 
+vi.mock("./background-bilibili-fetch", () => ({
+	fetchBilibiliJsonDirect: vi.fn(),
+	fetchBilibiliJsonWithCookiesDirect: vi.fn(),
+	fetchBilibiliRangeDirect: vi.fn(),
+	isAllowedBilibiliFetchUrl: () => true,
+}));
+
 import browser from "./utils/browser-polyfill";
+import { fetchBilibiliJsonDirect } from "./background-bilibili-fetch";
 
 const SETTINGS = {
 	enabled: true,
@@ -414,32 +422,23 @@ describe("review fixes", () => {
 
 	test("resolves cid for multi-part video via page param", async () => {
 		const { deps, store } = makeDeps();
-		const browserModule = await import("./utils/browser-polyfill");
-		const sendMessage = vi.mocked(
-			browserModule.default.runtime.sendMessage,
-		);
-		sendMessage.mockReset();
-		sendMessage.mockImplementation(async (message: any) => {
-			if (
-				message.action === "fetchBilibiliJson" &&
-				message.url.includes("/x/web-interface/view")
-			) {
+		const viewDirect = vi.mocked(fetchBilibiliJsonDirect);
+		viewDirect.mockReset();
+		viewDirect.mockImplementation(async (url: string) => {
+			if (url.includes("/x/web-interface/view")) {
 				return {
-					success: true,
+					code: 0,
 					data: {
-						code: 0,
-						data: {
-							aid: 9,
-							cid: 111,
-							pages: [
-								{ page: 1, cid: 111 },
-								{ page: 2, cid: 222 },
-							],
-						},
+						aid: 9,
+						cid: 111,
+						pages: [
+							{ page: 1, cid: 111 },
+							{ page: 2, cid: 222 },
+						],
 					},
 				};
 			}
-			throw new Error(`unexpected ${message.action}`);
+			throw new Error(`unexpected url ${url}`);
 		});
 		await startTranscribeTask(
 			{

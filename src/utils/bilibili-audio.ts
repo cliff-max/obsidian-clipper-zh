@@ -20,12 +20,44 @@ export interface BilibiliAudioStream {
 
 /**
  * 经 wbi 签名 + cookie 注入通道获取 64kbps 音频流地址与体积。
+ * transport 可注入直调通道（background 内部使用，消息发给自己不投递）；
+ * 默认走 runtime 消息（content script 环境）。
  */
-export async function fetchBilibiliAudioStream(input: {
-	aid: number;
-	bvid: string;
-	cid: number;
-}): Promise<BilibiliAudioStream> {
+export interface BilibiliAudioTransport {
+	/** 匿名 JSON 抓取（wbi keys 的 nav 请求）。 */
+	json?: (url: string) => Promise<any>;
+	/** cookie 注入 JSON 抓取（playurl）。 */
+	jsonWithCookies?: (url: string) => Promise<any>;
+}
+
+export async function fetchBilibiliAudioStream(
+	input: {
+		aid: number;
+		bvid: string;
+		cid: number;
+	},
+	transport?: BilibiliAudioTransport,
+): Promise<BilibiliAudioStream> {
+	const jsonViaMessage = async (u: string) => {
+		const r = (await browser.runtime.sendMessage({
+			action: "fetchBilibiliJson",
+			url: u,
+		})) as any;
+		if (!r?.success) throw new Error(r?.error || "fetch failed");
+		return r.data;
+	};
+	const json = transport?.json ?? jsonViaMessage;
+	const jsonWithCookies =
+		transport?.jsonWithCookies ??
+		(async (u: string) => {
+			const r = (await browser.runtime.sendMessage({
+				action: "fetchBilibiliJsonWithCookies",
+				url: u,
+			})) as any;
+			if (!r?.success) throw new Error(r?.error || "fetch failed");
+			return r.data;
+		});
+
 	const params: Record<string, string> = {
 		aid: String(input.aid),
 		bvid: input.bvid,
@@ -35,24 +67,13 @@ export async function fetchBilibiliAudioStream(input: {
 		fourk: "1",
 	};
 	let url = `https://api.bilibili.com/x/player/wbi/playurl?${new URLSearchParams(params).toString()}`;
-	const wbiKeys = await getWbiKeys(async (u: string) => {
-		const r = (await browser.runtime.sendMessage({
-			action: "fetchBilibiliJson",
-			url: u,
-		})) as any;
-		if (!r?.success) throw new Error(r?.error || "fetch failed");
-		return r.data;
-	}).catch(() => null);
+	const wbiKeys = await getWbiKeys(json).catch(() => null);
 	if (wbiKeys) {
 		url = `https://api.bilibili.com/x/player/wbi/playurl?${signWbiQuery(params, wbiKeys)}`;
 	}
 
-	const resp = (await browser.runtime.sendMessage({
-		action: "fetchBilibiliJsonWithCookies",
-		url,
-	})) as any;
-	if (!resp?.success) throw new Error(resp?.error || "playurl 请求失败");
-	const data = resp.data?.data;
+	const resp = (await jsonWithCookies(url)) as any;
+	const data = resp?.data;
 	const audios = data?.dash?.audio || [];
 	if (!audios.length) throw new Error("无可用音频流");
 	const pick =
@@ -73,12 +94,15 @@ export async function fetchBilibiliAudioStream(input: {
 
 /**
  * Range 下载音频片段，经 background 代理（Referer 注入 + bilivideo 白名单）。
+ * rangeFn 可注入直调实现（background 内部使用）。
  */
 export async function downloadAudioRange(
 	url: string,
 	start: number,
 	end: number,
+	rangeFn?: (u: string, s: number, e: number) => Promise<ArrayBuffer>,
 ): Promise<ArrayBuffer> {
+	if (rangeFn) return rangeFn(url, start, end);
 	const resp = (await browser.runtime.sendMessage({
 		action: "fetchBilibiliRange",
 		url,

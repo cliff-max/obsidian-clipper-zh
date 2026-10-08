@@ -1,6 +1,10 @@
 import type { TranscribeSettings } from "./types/types";
 import { DEFAULT_TRANSCRIBE_SETTINGS } from "./types/types";
-import browser from "./utils/browser-polyfill";
+import {
+	fetchBilibiliJsonDirect,
+	fetchBilibiliJsonWithCookiesDirect,
+	fetchBilibiliRangeDirect,
+} from "./background-bilibili-fetch";
 import { loadSettings } from "./utils/storage-utils";
 import { createLogger } from "./utils/logger";
 import {
@@ -88,17 +92,30 @@ function isAuthFailure(error: unknown): boolean {
 /**
  * 拉取音频头部，扫描 moof 边界生成分块计划；头部无 fragment 时扩拉至 4MB。
  */
-async function fetchChunkPlan(stream: {
-	url: string;
-	bitrateBps: number;
-	sizeBytes: number;
-}): Promise<TranscribeTaskState["chunkPlan"]> {
+async function fetchChunkPlan(
+	stream: {
+		url: string;
+		bitrateBps: number;
+		sizeBytes: number;
+	},
+	rangeFn?: (u: string, s: number, e: number) => Promise<ArrayBuffer>,
+): Promise<TranscribeTaskState["chunkPlan"]> {
 	const headBytes = Math.min(512 * 1024, Math.max(1, stream.sizeBytes));
-	const head = await downloadAudioRange(stream.url, 0, headBytes - 1);
+	const head = await downloadAudioRange(
+		stream.url,
+		0,
+		headBytes - 1,
+		rangeFn,
+	);
 	let offsets = findMoofOffsets(new Uint8Array(head));
 	if (!offsets.length && stream.sizeBytes > headBytes) {
 		const biggerBytes = Math.min(4 * 1024 * 1024, stream.sizeBytes);
-		const bigger = await downloadAudioRange(stream.url, 0, biggerBytes - 1);
+		const bigger = await downloadAudioRange(
+			stream.url,
+			0,
+			biggerBytes - 1,
+			rangeFn,
+		);
 		offsets = findMoofOffsets(new Uint8Array(bigger));
 	}
 	if (!offsets.length) return [];
@@ -112,10 +129,24 @@ async function fetchChunkPlan(stream: {
 }
 
 function defaultDeps(tabId: number): TaskDeps {
+	// background 内部一律直调 fetch 模块——runtime.sendMessage 发给自己不投递
+	const rangeDirect = (
+		url: string,
+		start: number,
+		end: number,
+	): Promise<ArrayBuffer> => fetchBilibiliRangeDirect(url, start, end);
 	return {
-		fetchStream: fetchBilibiliAudioStream,
-		downloadRange: downloadAudioRange,
-		fetchPlan: fetchChunkPlan,
+		fetchStream: (input: { aid: number; bvid: string; cid: number }) =>
+			fetchBilibiliAudioStream(input, {
+				json: fetchBilibiliJsonDirect,
+				jsonWithCookies: fetchBilibiliJsonWithCookiesDirect,
+			}),
+		downloadRange: rangeDirect,
+		fetchPlan: (stream: {
+			url: string;
+			bitrateBps: number;
+			sizeBytes: number;
+		}) => fetchChunkPlan(stream, rangeDirect),
 		decodeWav: async (audio) => {
 			let resp: any;
 			try {
@@ -277,13 +308,11 @@ async function resolveVideoInfo(
 	if (input.cid > 0) {
 		return { aid: input.aid, cid: input.cid, durationSec: 0 };
 	}
-	// 注意：此处必须用静态 import 的 browser——动态 import() 会被 webpack
-	// 编译为异步 chunk，其运行时在 SW 中推断加载路径需要 document 而崩溃。
-	const resp = (await browser.runtime.sendMessage({
-		action: "fetchBilibiliJson",
-		url: `https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
-	})) as any;
-	const data = resp?.data?.data;
+	// background 内部必须直调 fetch 模块——runtime.sendMessage 发给自己不投递
+	const resp = (await fetchBilibiliJsonDirect(
+		`https://api.bilibili.com/x/web-interface/view?bvid=${input.bvid}`,
+	)) as any;
+	const data = resp?.data;
 	if (!data?.cid) {
 		deps.notify("未找到视频信息，无法开始转写");
 		return null;

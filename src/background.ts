@@ -15,6 +15,12 @@ import {
 } from "./background-transcribe";
 import { loadSettings } from "./utils/storage-utils";
 import { createLogger } from "./utils/logger";
+import {
+	fetchBilibiliJsonDirect,
+	fetchBilibiliJsonWithCookiesDirect,
+	fetchBilibiliRangeDirect,
+	isAllowedBilibiliFetchUrl,
+} from "./background-bilibili-fetch";
 
 const bgLogger = createLogger("Background");
 
@@ -51,95 +57,6 @@ function fetchBilibiliJsonViaMainWorld(
 		.then((results) => {
 			return results?.[0]?.result;
 		});
-}
-
-// MV3 下 SW 与注入脚本发起的跨站请求 initiator 均为扩展，SameSite cookie（B 站
-// SESSDATA 登录态）不会随请求发出，AI 字幕因此拿不到。此处用 cookies API 读取
-// B 站 cookie，经 declarativeNetRequest 临时规则注入 Cookie 头，让 SW 请求携带
-// 登录态。cookie 仅在内存中拼装并发往 B 站自有接口，不做任何留存。
-const BILIBILI_COOKIE_RULE_BASE = 9100;
-const BILIBILI_COOKIE_RULE_WINDOW = 100;
-let nextBilibiliCookieRuleId = BILIBILI_COOKIE_RULE_BASE;
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-async function fetchBilibiliJsonWithCookies(url: string): Promise<any> {
-	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
-	}
-	if (
-		!chrome.declarativeNetRequest?.updateSessionRules ||
-		!browser.cookies?.getAll
-	) {
-		throw new Error("Cookie-injected fetch unsupported on this browser");
-	}
-
-	const cookies = await browser.cookies.getAll({
-		url: "https://api.bilibili.com/",
-	});
-	if (!cookies.length) {
-		throw new Error(
-			"No Bilibili cookies found (browser may be logged out)",
-		);
-	}
-	const cookieHeader = cookies
-		.map((cookie) => `${cookie.name}=${cookie.value}`)
-		.join("; ");
-
-	const ruleId =
-		BILIBILI_COOKIE_RULE_BASE +
-		((nextBilibiliCookieRuleId++ - BILIBILI_COOKIE_RULE_BASE) %
-			BILIBILI_COOKIE_RULE_WINDOW);
-	await chrome.declarativeNetRequest.updateSessionRules({
-		removeRuleIds: [ruleId],
-		addRules: [
-			{
-				id: ruleId,
-				priority: 1,
-				action: {
-					type: "modifyHeaders" as any,
-					requestHeaders: [
-						{
-							header: "Cookie",
-							operation: "set" as any,
-							value: cookieHeader,
-						},
-						{
-							header: "Referer",
-							operation: "set" as any,
-							value: "https://www.bilibili.com/",
-						},
-					],
-				},
-				condition: {
-					regexFilter: `^${escapeRegExp(url)}$`,
-					resourceTypes: ["xmlhttprequest" as any],
-				},
-			},
-		],
-	});
-
-	try {
-		const response = await fetch(url, {
-			method: "GET",
-			credentials: "omit",
-			cache: "no-store",
-		});
-		if (!response.ok) {
-			throw new Error(
-				`Bilibili fetch failed with status ${response.status}`,
-			);
-		}
-		return await response.json();
-	} finally {
-		chrome.declarativeNetRequest
-			.updateSessionRules({ removeRuleIds: [ruleId] })
-			.catch(() => {
-				// 清理失败不影响主流程，规则窗口循环复用会覆盖旧规则
-			});
-	}
 }
 
 // Chrome: declarativeNetRequest to rewrite Referer on YouTube embeds.
@@ -229,74 +146,6 @@ async function disableBilibiliEmbedRule(): Promise<void> {
 	await chrome.declarativeNetRequest.updateSessionRules({
 		removeRuleIds: [BILIBILI_EMBED_RULE_ID],
 	});
-}
-
-/**
- * 判断是否允许通过后台代理抓取 B 站接口。
- */
-function isAllowedBilibiliFetchUrl(url: string): boolean {
-	try {
-		const parsedUrl = new URL(url);
-		return (
-			parsedUrl.protocol === "https:" &&
-			(parsedUrl.hostname === "api.bilibili.com" ||
-				parsedUrl.hostname.endsWith(".hdslb.com") ||
-				parsedUrl.hostname.endsWith(".bilivideo.com"))
-		);
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Range 下载 B 站音视频流片段（AI 转写用）。
- */
-async function fetchBilibiliRange(
-	url: string,
-	rangeStart: number,
-	rangeEnd: number,
-): Promise<ArrayBuffer> {
-	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
-	}
-	const response = await fetch(url, {
-		method: "GET",
-		cache: "no-store",
-		headers: {
-			Referer: "https://www.bilibili.com/",
-			Range: `bytes=${rangeStart}-${rangeEnd}`,
-		},
-	});
-	if (!response.ok && response.status !== 206) {
-		throw new Error(
-			`Bilibili range fetch failed with status ${response.status}`,
-		);
-	}
-	return await response.arrayBuffer();
-}
-
-/**
- * 通过后台统一抓取 B 站 JSON，复用登录态并补全 Referer。
- */
-async function fetchBilibiliJson(url: string): Promise<any> {
-	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
-	}
-
-	const response = await fetch(url, {
-		method: "GET",
-		credentials: "include",
-		cache: "no-store",
-		headers: {
-			Referer: "https://www.bilibili.com/",
-		},
-	});
-
-	if (!response.ok) {
-		throw new Error(`Bilibili fetch failed with status ${response.status}`);
-	}
-
-	return response.json();
 }
 
 // Feishu API proxy with token management
@@ -633,7 +482,7 @@ browser.runtime.onMessage.addListener(
 				typedRequest.action === "fetchBilibiliJsonWithCookies" &&
 				typedRequest.url
 			) {
-				fetchBilibiliJsonWithCookies(typedRequest.url)
+				fetchBilibiliJsonWithCookiesDirect(typedRequest.url)
 					.then((data) => {
 						sendResponse({ success: true, data });
 					})
@@ -659,7 +508,7 @@ browser.runtime.onMessage.addListener(
 					rangeStart?: number;
 					rangeEnd?: number;
 				};
-				fetchBilibiliRange(
+				fetchBilibiliRangeDirect(
 					rangeRequest.url,
 					rangeRequest.rangeStart ?? 0,
 					rangeRequest.rangeEnd ?? 0,
@@ -715,6 +564,12 @@ browser.runtime.onMessage.addListener(
 					}).catch((error) => {
 						bgLogger.warn("Transcribe task crashed", {
 							error: String(error),
+						});
+						void chrome.notifications?.create({
+							type: "basic",
+							iconUrl: "icons/icon128.png",
+							title: "AI 转写",
+							message: `转写任务异常终止：${String(error)}`,
 						});
 					});
 				})();
@@ -893,7 +748,7 @@ browser.runtime.onMessage.addListener(
 				typedRequest.action === "fetchBilibiliJson" &&
 				typedRequest.url
 			) {
-				fetchBilibiliJson(typedRequest.url)
+				fetchBilibiliJsonDirect(typedRequest.url)
 					.then((data) => {
 						sendResponse({ success: true, data });
 					})
