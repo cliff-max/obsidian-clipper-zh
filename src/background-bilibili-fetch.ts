@@ -11,19 +11,27 @@ import browser from "./utils/browser-polyfill";
 
 /**
  * 判断是否允许通过后台代理抓取 B 站接口。
+ * upos-*.akamaized.net 为 B 站对部分网络环境返回的 Akamai 镜像 CDN，
+ * 仅允许 upos- 前缀（akamaized.net 为公共 CDN 域，不能整体放行）。
  */
 export function isAllowedBilibiliFetchUrl(url: string): boolean {
 	try {
 		const parsedUrl = new URL(url);
+		if (parsedUrl.protocol !== "https:") return false;
+		const host = parsedUrl.hostname;
 		return (
-			parsedUrl.protocol === "https:" &&
-			(parsedUrl.hostname === "api.bilibili.com" ||
-				parsedUrl.hostname.endsWith(".hdslb.com") ||
-				parsedUrl.hostname.endsWith(".bilivideo.com"))
+			host === "api.bilibili.com" ||
+			host.endsWith(".hdslb.com") ||
+			host.endsWith(".bilivideo.com") ||
+			(host.startsWith("upos-") && host.endsWith(".akamaized.net"))
 		);
 	} catch {
 		return false;
 	}
+}
+
+function blockedError(url: string): Error {
+	return new Error(`Blocked Bilibili fetch URL: ${url.slice(0, 120)}`);
 }
 
 /**
@@ -31,7 +39,7 @@ export function isAllowedBilibiliFetchUrl(url: string): boolean {
  */
 export async function fetchBilibiliJsonDirect(url: string): Promise<any> {
 	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
+		throw blockedError(url);
 	}
 	const response = await fetch(url, {
 		method: "GET",
@@ -63,7 +71,7 @@ export async function fetchBilibiliJsonWithCookiesDirect(
 	url: string,
 ): Promise<any> {
 	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
+		throw blockedError(url);
 	}
 	if (
 		!(globalThis as any).chrome?.declarativeNetRequest
@@ -150,7 +158,7 @@ export async function fetchBilibiliRangeDirect(
 	rangeEnd: number,
 ): Promise<ArrayBuffer> {
 	if (!isAllowedBilibiliFetchUrl(url)) {
-		throw new Error("Blocked Bilibili fetch URL");
+		throw blockedError(url);
 	}
 	const response = await fetch(url, {
 		method: "GET",
