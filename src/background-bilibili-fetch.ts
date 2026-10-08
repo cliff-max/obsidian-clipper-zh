@@ -151,13 +151,17 @@ export async function fetchBilibiliJsonWithCookiesDirect(
 
 /**
  * Range 下载 B 站音视频流片段（AI 转写用）。
+ * skipAllowList：URL 由内部 playurl 响应给出（可信来源，非外部输入）时跳过
+ * 域名白名单——B 站 CDN 域名族谱庞大（bilivideo.com/.cn、mcdn、upos-*
+ * akamaized 等），静态枚举追不完。消息协议入口（外部可发起）不得跳过。
  */
 export async function fetchBilibiliRangeDirect(
 	url: string,
 	rangeStart: number,
 	rangeEnd: number,
+	opts?: { skipAllowList?: boolean },
 ): Promise<ArrayBuffer> {
-	if (!isAllowedBilibiliFetchUrl(url)) {
+	if (!opts?.skipAllowList && !isAllowedBilibiliFetchUrl(url)) {
 		throw blockedError(url);
 	}
 	const response = await fetch(url, {

@@ -129,12 +129,15 @@ async function fetchChunkPlan(
 }
 
 function defaultDeps(tabId: number): TaskDeps {
-	// background 内部一律直调 fetch 模块——runtime.sendMessage 发给自己不投递
+	// background 内部一律直调 fetch 模块——runtime.sendMessage 发给自己不投递。
+	// 下载 URL 均来自 playurl 响应（可信来源），跳过静态域名白名单：
+	// B 站 CDN 域名族谱庞大（mcdn/akamaized/bilivideo.cn…）无法穷举。
 	const rangeDirect = (
 		url: string,
 		start: number,
 		end: number,
-	): Promise<ArrayBuffer> => fetchBilibiliRangeDirect(url, start, end);
+	): Promise<ArrayBuffer> =>
+		fetchBilibiliRangeDirect(url, start, end, { skipAllowList: true });
 	return {
 		fetchStream: (input: { aid: number; bvid: string; cid: number }) =>
 			fetchBilibiliAudioStream(input, {
