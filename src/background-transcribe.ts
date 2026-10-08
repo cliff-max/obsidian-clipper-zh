@@ -153,6 +153,10 @@ function defaultDeps(tabId: number): TaskDeps {
 		decodeWav: async (audio) => {
 			let resp: any;
 			try {
+				logger.info("Sending decode request", {
+					tabId,
+					bytes: audio.byteLength,
+				});
 				resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(
 					tabId,
 					{
@@ -166,6 +170,10 @@ function defaultDeps(tabId: number): TaskDeps {
 					`RECEIVER_UNAVAILABLE: ${String(error)}`,
 				);
 			}
+			logger.info("Decode response", {
+				success: resp?.success,
+				respKeys: resp ? Object.keys(resp) : null,
+			});
 			if (!resp?.success) throw new Error(resp?.error || "页面解码失败");
 			return resp.data;
 		},

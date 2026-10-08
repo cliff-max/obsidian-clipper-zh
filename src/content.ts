@@ -310,15 +310,39 @@ declare global {
 				return true;
 			}
 
-			if (
-				request.action === "decodeAudioToWav" &&
-				request.audio instanceof ArrayBuffer
-			) {
-				decodeAudioToWav(request.audio)
-					.then((wav) => sendResponse({ success: true, data: wav }))
-					.catch((error) =>
-						sendResponse({ success: false, error: String(error) }),
-					);
+			if (request.action === "decodeAudioToWav") {
+				console.log(
+					"[Clipper] decode req received, audio:",
+					request.audio?.constructor?.name,
+					"bytes:",
+					request.audio?.byteLength,
+				);
+				if (request.audio instanceof ArrayBuffer) {
+					decodeAudioToWav(request.audio)
+						.then((wav) => {
+							console.log(
+								"[Clipper] decode done, wav bytes:",
+								wav.byteLength,
+							);
+							sendResponse({ success: true, data: wav });
+						})
+						.catch((error) => {
+							console.warn("[Clipper] decode failed:", error);
+							sendResponse({
+								success: false,
+								error: String(error),
+							});
+						});
+					return true;
+				}
+				console.warn(
+					"[Clipper] decode req audio is NOT ArrayBuffer:",
+					typeof request.audio,
+				);
+				sendResponse({
+					success: false,
+					error: `audio 类型异常: ${typeof request.audio}`,
+				});
 				return true;
 			}
 
