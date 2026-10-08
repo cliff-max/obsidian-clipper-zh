@@ -14,6 +14,10 @@ import {
 	findMoofOffsets,
 } from "./utils/bilibili-audio";
 import { transcribeAudioBlob } from "./utils/transcribe-client";
+import {
+	arrayBufferToBase64,
+	base64ToArrayBuffer,
+} from "./utils/audio-wav-encoder";
 import { transcriptCacheKey } from "./utils/bilibili-extractor";
 
 const logger = createLogger("Transcribe");
@@ -157,11 +161,13 @@ function defaultDeps(tabId: number): TaskDeps {
 					tabId,
 					bytes: audio.byteLength,
 				});
+				// 扩展消息是 JSON 序列化的：ArrayBuffer 会变空对象，必须 base64
+				const audioBase64 = arrayBufferToBase64(audio);
 				resp = (await (globalThis as any).chrome?.tabs?.sendMessage?.(
 					tabId,
 					{
 						action: "decodeAudioToWav",
-						audio,
+						audioBase64,
 					},
 				)) as any;
 			} catch (error) {
@@ -170,12 +176,11 @@ function defaultDeps(tabId: number): TaskDeps {
 					`RECEIVER_UNAVAILABLE: ${String(error)}`,
 				);
 			}
-			logger.info("Decode response", {
-				success: resp?.success,
-				respKeys: resp ? Object.keys(resp) : null,
-			});
 			if (!resp?.success) throw new Error(resp?.error || "页面解码失败");
-			return resp.data;
+			if (typeof resp.wavBase64 !== "string") {
+				throw new Error("页面解码响应缺少 wavBase64");
+			}
+			return base64ToArrayBuffer(resp.wavBase64);
 		},
 		transcribe: transcribeAudioBlob,
 		storageGet: async (key) => {
@@ -498,7 +503,8 @@ export async function startTranscribeTask(
 			}
 			state.chunkResults[i] = {
 				startSec: chunk.startSec,
-				text: text.trim(),
+				// SenseVoice 等引擎输出的音乐/事件标记不属于语音内容
+				text: text.replace(/[🎼🎵🎶]/gu, "").trim(),
 			};
 			return "ok";
 		} catch (error) {

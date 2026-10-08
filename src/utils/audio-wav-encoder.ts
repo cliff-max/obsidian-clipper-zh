@@ -1,4 +1,27 @@
 /**
+ * ArrayBuffer ↔ base64：Chrome 扩展消息是 JSON 序列化的，ArrayBuffer 会
+ * 变成空对象，音频字节必须以 base64 字符串过消息通道。
+ */
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = "";
+	const CHUNK = 0x8000;
+	for (let i = 0; i < bytes.length; i += CHUNK) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+	}
+	return btoa(binary);
+}
+
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return bytes.buffer;
+}
+
+/**
  * 将 16kHz 单声道浮点采样编码为 16-bit PCM WAV。
  */
 export function encodeWav(

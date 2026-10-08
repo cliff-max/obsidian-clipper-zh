@@ -396,13 +396,10 @@ export async function extractBilibiliStructuredContent(
 			resolvedPage.cid,
 		);
 		if (cached?.chunks?.length) {
-			transcript = cached.chunks
-				.map((chunk) => ({
-					from: chunk.startSec,
-					to: chunk.startSec + 600,
-					content: chunk.text,
-				}))
-				.filter((cue) => cue.content.trim().length > 0);
+			// ASR 块无句级时间戳：按句切分，时间戳在块内按文本长度线性插值
+			transcript = cached.chunks.flatMap((chunk) =>
+				splitChunkIntoCues(chunk.text, chunk.startSec),
+			);
 			finalNotice = `以下内容由 AI 语音转写生成（模型 ${cached.model}），可能存在识别误差`;
 		}
 	}
@@ -483,6 +480,32 @@ interface CachedTranscript {
 /** AI 转写成品缓存的存储键（写读两侧统一使用）。 */
 export function transcriptCacheKey(bvid: string, cid: number): string {
 	return `biliTranscript:${bvid}:${cid}`;
+}
+
+/**
+ * 把 ASR 块文本按句切分为多条 cue，时间戳按字符占比在块内线性插值
+ * （ASR 无句级时间轴，插值仅为近似定位）。
+ */
+export function splitChunkIntoCues(
+	text: string,
+	chunkStartSec: number,
+): BilibiliTranscriptCue[] {
+	const sentences =
+		text
+			.replace(/[🎼🎵🎶]/gu, "")
+			.split(/(?<=[。！？!?；;])/)
+			.map((s) => s.trim())
+			.filter(Boolean) || [];
+	if (!sentences.length) return [];
+	const totalChars = sentences.reduce((n, s) => n + s.length, 0);
+	let consumed = 0;
+	const totalSec = 5 * 60; // 块时长（CHUNK_TARGET_BYTES 恒定码率对应 5 分钟）
+	return sentences.map((sentence) => {
+		const from = chunkStartSec + (consumed / totalChars) * totalSec;
+		consumed += sentence.length;
+		const to = chunkStartSec + (consumed / totalChars) * totalSec;
+		return { from, to, content: sentence };
+	});
 }
 
 /** "需 AI 转写"标记的存储键前缀（剪藏确认无字幕后写入，浮层据此显隐）。 */

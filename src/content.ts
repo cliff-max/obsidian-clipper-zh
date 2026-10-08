@@ -4,7 +4,11 @@ import { loadSettings, generalSettings } from "./utils/storage-utils";
 import Defuddle from "defuddle";
 import { getDomain, normalizeImageSources } from "./utils/string-utils";
 import { extractContentBySelector as extractContentBySelectorShared } from "./utils/shared";
-import { decodeAudioToWav } from "./utils/audio-wav-encoder";
+import {
+	arrayBufferToBase64,
+	base64ToArrayBuffer,
+	decodeAudioToWav,
+} from "./utils/audio-wav-encoder";
 import { initTranscribeUi } from "./content-transcribe-ui";
 import { createMarkdownContent } from "defuddle/full";
 import { flattenShadowDom } from "./utils/flatten-shadow-dom";
@@ -311,20 +315,15 @@ declare global {
 			}
 
 			if (request.action === "decodeAudioToWav") {
-				console.log(
-					"[Clipper] decode req received, audio:",
-					request.audio?.constructor?.name,
-					"bytes:",
-					request.audio?.byteLength,
-				);
-				if (request.audio instanceof ArrayBuffer) {
-					decodeAudioToWav(request.audio)
+				if (typeof request.audioBase64 === "string") {
+					// 消息经 JSON 序列化，音频以 base64 传输
+					const audio = base64ToArrayBuffer(request.audioBase64);
+					decodeAudioToWav(audio)
 						.then((wav) => {
-							console.log(
-								"[Clipper] decode done, wav bytes:",
-								wav.byteLength,
-							);
-							sendResponse({ success: true, data: wav });
+							sendResponse({
+								success: true,
+								wavBase64: arrayBufferToBase64(wav),
+							});
 						})
 						.catch((error) => {
 							console.warn("[Clipper] decode failed:", error);
@@ -335,13 +334,9 @@ declare global {
 						});
 					return true;
 				}
-				console.warn(
-					"[Clipper] decode req audio is NOT ArrayBuffer:",
-					typeof request.audio,
-				);
 				sendResponse({
 					success: false,
-					error: `audio 类型异常: ${typeof request.audio}`,
+					error: `audioBase64 类型异常: ${typeof request.audioBase64}`,
 				});
 				return true;
 			}
