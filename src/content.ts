@@ -7,6 +7,7 @@ import { extractContentBySelector as extractContentBySelectorShared } from "./ut
 import {
 	arrayBufferToBase64,
 	base64ToArrayBuffer,
+	decodeAudioToTranscribeSlices,
 	decodeAudioToWav,
 } from "./utils/audio-wav-encoder";
 import { initTranscribeUi } from "./content-transcribe-ui";
@@ -18,7 +19,15 @@ import { createLogger } from "./utils/logger";
 import {
 	extractBilibiliStructuredContent,
 	isBilibiliVideoUrl,
+	parseBilibiliUrl,
 } from "./utils/bilibili-extractor";
+import {
+	collectDouyinAwemeAudio,
+	extractDouyinStructuredContent,
+	isDouyinSiteUrl,
+	isDouyinVideoUrl,
+	parseDouyinUrl,
+} from "./utils/douyin-extractor";
 import {
 	extractFeishuStructuredContent,
 	isFeishuDocUrl,
@@ -338,6 +347,67 @@ declare global {
 					success: false,
 					error: `audioBase64 类型异常: ${typeof request.audioBase64}`,
 				});
+			}
+
+			if (request.action === "decodeAudioToSlices") {
+				if (typeof request.audioBase64 === "string") {
+					// 粗块（~5 分钟）解码 + VAD 静音切分为 ~30s 细块，一次回传
+					const audio = base64ToArrayBuffer(request.audioBase64);
+					decodeAudioToTranscribeSlices(audio)
+						.then((slices) => {
+							sendResponse({
+								success: true,
+								slices: slices.map((slice) => ({
+									startSec: slice.startSec,
+									durationSec: slice.durationSec,
+									wavBase64: arrayBufferToBase64(slice.wav),
+								})),
+							});
+						})
+						.catch((error) => {
+							console.warn("[Clipper] slice decode failed:", error);
+							sendResponse({
+								success: false,
+								error: String(error),
+							});
+						});
+					return true;
+				}
+				sendResponse({
+					success: false,
+					error: `audioBase64 类型异常: ${typeof request.audioBase64}`,
+				});
+			}
+
+			if (request.action === "getDouyinAwemeData") {
+				// background 转写任务请求当前视频的音频元数据（原声/播放地址）。
+				// 数据来自页面 XHR 桥（按 awemeId 精确解析），与页面形态无关，
+				// 故抖音站内任意页面均放行
+				const awemeId = String(request.awemeId || "");
+				if (!isDouyinSiteUrl(document.URL) || !awemeId) {
+					sendResponse({
+						success: false,
+						error: "当前页面不是抖音页面",
+					});
+					return true;
+				}
+				collectDouyinAwemeAudio(document, awemeId)
+					.then((aweme) => {
+						if (!aweme?.audioUrl) {
+							sendResponse({
+								success: false,
+								error: "未获取到音频地址（图集或页面数据不可读）",
+							});
+							return;
+						}
+						sendResponse({ success: true, aweme });
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error: String(error),
+						});
+					});
 				return true;
 			}
 
@@ -478,6 +548,19 @@ declare global {
 									return null;
 								})
 							: null;
+						// 抖音站内所有页面接入：详情页/当前 feed 视频提取字幕，
+						// 陈列页（主页/收藏/搜索）给最小兜底——永不回退 defuddle
+						const douyinContent = isDouyinSiteUrl(document.URL)
+							? await extractDouyinStructuredContent(
+									document,
+								).catch((error) => {
+									contentLogger.warn(
+										"Failed to extract Douyin structured content",
+										{ error: String(error) },
+									);
+									return null;
+								})
+							: null;
 						const feishuContent = isFeishuDocUrl(document.URL)
 							? await extractFeishuStructuredContent(
 									document,
@@ -507,6 +590,15 @@ declare global {
 							extractedContent.page = String(
 								bilibiliContent.page,
 							);
+						}
+						if (douyinContent) {
+							extractedContent.transcript =
+								douyinContent.transcriptMarkdown;
+							extractedContent.transcriptMarkdown =
+								douyinContent.transcriptMarkdown;
+							extractedContent.transcriptText =
+								douyinContent.transcriptText;
+							extractedContent.awemeId = douyinContent.awemeId;
 						}
 
 						// Create a new DOMParser
@@ -591,40 +683,51 @@ declare global {
 						const response: ContentResponse = {
 							author:
 								bilibiliContent?.author ||
+								douyinContent?.author ||
 								feishuContent?.author ||
 								defuddled.author,
 							content:
 								bilibiliContent?.structuredHtml ||
+								douyinContent?.structuredHtml ||
 								feishuContent?.content ||
 								weChatArticleContent ||
 								defuddled.content,
 							description:
 								bilibiliContent?.description ||
+								douyinContent?.description ||
 								defuddled.description,
 							domain: getDomain(document.URL),
 							extractedContent: extractedContent,
 							favicon: defuddled.favicon,
 							fullHtml: cleanedHtml,
 							highlights: highlighter.getHighlights(),
-							image: bilibiliContent?.image || defuddled.image,
+							image:
+								bilibiliContent?.image ||
+								douyinContent?.image ||
+								defuddled.image,
 							language: defuddled.language || "",
 							parseTime: defuddled.parseTime,
 							published:
 								bilibiliContent?.published ||
+								douyinContent?.published ||
 								defuddled.published,
 							schemaOrgData: defuddled.schemaOrgData,
 							selectedHtml: selectedHtml,
 							site: bilibiliContent
 								? "Bilibili"
-								: feishuContent
-									? "Feishu"
-									: defuddled.site,
+								: douyinContent
+									? "Douyin"
+									: feishuContent
+										? "Feishu"
+										: defuddled.site,
 							title:
 								bilibiliContent?.title ||
+								douyinContent?.title ||
 								feishuContent?.title ||
 								defuddled.title,
 							wordCount:
 								bilibiliContent?.wordCount ||
+								douyinContent?.wordCount ||
 								feishuContent?.wordCount ||
 								defuddled.wordCount,
 							metaTags: defuddled.metaTags || [],
@@ -911,4 +1014,69 @@ declare global {
 	});
 
 	initTranscribeUi();
+	injectDouyinBridge();
+	scheduleTranscribeAutoProbe();
 })();
+
+/**
+ * 无字幕视频自动探测：视频页稳定后跑一次提取器（与剪藏同链路），
+ * "需 AI 转写"标记无需先剪藏即写入，浮层按钮自动出现。
+ * 每个 bvid/awemeId 每页面生命周期只探测一次，接口代价与一次剪藏相当。
+ */
+function scheduleTranscribeAutoProbe(): void {
+	const probed = new Set<string>();
+	let timer: number | null = null;
+	const probe = () => {
+		timer = null;
+		try {
+			if (isBilibiliVideoUrl(location.href)) {
+				const { bvid } = parseBilibiliUrl(location.href);
+				if (!bvid || probed.has(bvid)) return;
+				probed.add(bvid);
+				void extractBilibiliStructuredContent(document).catch(() => {
+					// 探测失败静默：剪藏时还会再走完整链路
+				});
+			} else if (isDouyinVideoUrl(location.href)) {
+				const { awemeId } = parseDouyinUrl(location.href);
+				if (!awemeId || probed.has(awemeId)) return;
+				probed.add(awemeId);
+				void extractDouyinStructuredContent(document).catch(() => {
+					// 同上
+				});
+			}
+		} catch {
+			// 探测异常不影响页面
+		}
+	};
+	const schedule = () => {
+		if (timer !== null) clearTimeout(timer);
+		timer = window.setTimeout(probe, 4000);
+	};
+	schedule();
+	let lastHref = location.href;
+	setInterval(() => {
+		if (location.href === lastHref) return;
+		lastHref = location.href;
+		if (
+			isBilibiliVideoUrl(location.href) ||
+			isDouyinVideoUrl(location.href)
+		) {
+			schedule();
+		}
+	}, 2000);
+}
+
+/**
+ * 注入抖音 MAIN world 桥（记录页面自身已签名的 aweme 接口响应）。
+ * 所有 douyin.com 页面都注入：feed 页点进视频是 SPA 导航，不会重新加载
+ * content script，只有常驻桥能捕获导航后的详情 XHR。
+ */
+function injectDouyinBridge(): void {
+	if (!isDouyinSiteUrl(location.href)) return;
+	if (document.getElementById("obsidian-clipper-douyin-bridge")) return;
+	const script = document.createElement("script");
+	script.id = "obsidian-clipper-douyin-bridge";
+	script.src = browser.runtime.getURL("douyin-bridge.js");
+	script.async = false;
+	(document.head || document.documentElement).appendChild(script);
+}

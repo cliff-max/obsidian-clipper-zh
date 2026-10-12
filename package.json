@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-clipper-zh",
-	"version": "1.5.0",
+	"version": "1.6.0",
 	"description": "Obsidian Web Clipper fork with enhanced Chinese platform support (Bilibili subtitles, bilingual YouTube transcripts, Feishu, WeChat articles).",
 	"repository": {
 		"type": "git",

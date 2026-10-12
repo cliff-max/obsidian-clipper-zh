@@ -3,6 +3,8 @@ import {
 	buildChunkPlan,
 	fetchBilibiliAudioStream,
 	findMoofOffsets,
+	parseSidxFragmentOffsets,
+	scanMoofBoxes,
 } from "./bilibili-audio";
 
 vi.mock("./browser-polyfill", () => ({
@@ -65,6 +67,71 @@ describe("findMoofOffsets", () => {
 	});
 });
 
+describe("scanMoofBoxes", () => {
+	test("reports chain end at the first incomplete box", () => {
+		const moof1 = box("moof", 8);
+		const mdat = box("mdat", 16);
+		const truncated = new Uint8Array([0, 0, 0, 200, 1, 2, 3]);
+		const bytes = concat(moof1, mdat, truncated);
+		const scan = scanMoofBoxes(bytes);
+		expect(scan.offsets).toEqual([0]);
+		expect(scan.end).toBe(moof1.length + mdat.length);
+	});
+});
+
+describe("parseSidxFragmentOffsets", () => {
+	function sidxBox(
+		sizes: number[],
+		firstOffset = 0,
+	): Uint8Array {
+		const payloadLen = 22 + sizes.length * 12;
+		const buf = box("sidx", payloadLen);
+		const view = new DataView(buf.buffer);
+		view.setUint8(8, 0); // version 0
+		view.setUint32(12, 1, false); // reference_ID
+		view.setUint32(16, 1000, false); // timescale
+		view.setUint32(20, 0, false); // earliest_presentation_time
+		view.setUint32(24, firstOffset, false); // first_offset
+		view.setUint16(28, sizes.length, false);
+		sizes.forEach((size, i) => {
+			const at = 30 + i * 12;
+			view.setUint32(at, size & 0x7fffffff, false);
+			view.setUint32(at + 4, 1000, false); // subsegment_duration
+			view.setUint32(at + 8, 0x90000000, false); // starts_with_SAP
+		});
+		return buf;
+	}
+
+	test("expands sidx references into absolute fragment offsets", () => {
+		const ftyp = box("ftyp", 4);
+		const moov = box("moov", 8);
+		const sidx = sidxBox([100, 200, 300]);
+		const bytes = concat(ftyp, moov, sidx);
+		const result = parseSidxFragmentOffsets(bytes)!;
+		const sidxEnd = ftyp.length + moov.length + sidx.length;
+		expect(result.initEnd).toBe(sidxEnd);
+		expect(result.offsets).toEqual([
+			sidxEnd,
+			sidxEnd + 100,
+			sidxEnd + 300,
+		]);
+	});
+
+	test("respects first_offset relative to sidx end", () => {
+		const sidx = sidxBox([50], 10);
+		const bytes = concat(box("ftyp", 4), sidx);
+		const result = parseSidxFragmentOffsets(bytes)!;
+		const sidxEnd = bytes.length;
+		expect(result.offsets).toEqual([sidxEnd + 10]);
+	});
+
+	test("returns null when no sidx present", () => {
+		expect(
+			parseSidxFragmentOffsets(concat(box("ftyp", 4), box("moov", 8))),
+		).toBeNull();
+	});
+});
+
 describe("buildChunkPlan", () => {
 	test("groups fragments into byte-bounded chunks with time estimates", () => {
 		// 64kbps：64000/8 = 8000 B/s。init=64B，fragment 起点 64/4064/8064，总长 12064
@@ -77,6 +144,28 @@ describe("buildChunkPlan", () => {
 
 	test("empty offsets yield empty plan", () => {
 		expect(buildChunkPlan([], 100, 100, 8000, 64000)).toEqual([]);
+	});
+
+	test("hard-splits sparse fragments beyond maxBlockBytes", () => {
+		// 单个巨型 fragment（30000B）超过 maxBlockBytes(10000)：必须硬拆，
+		// 否则巨型块解码响应会超出扩展消息 64MiB 上限
+		const plan = buildChunkPlan(
+			[0],
+			30000,
+			0,
+			8000,
+			64000,
+			10000,
+		);
+		expect(plan.map((p) => [p.start, p.end])).toEqual([
+			[0, 10000],
+			[10000, 20000],
+			[20000, 30000],
+		]);
+		// 所有块都不超过硬上限
+		expect(
+			plan.every((p) => p.end - p.start <= 10000),
+		).toBe(true);
 	});
 });
 
@@ -134,13 +223,14 @@ describe("fetchBilibiliAudioStream", () => {
 			}
 			throw new Error(`unexpected ${message.action}`);
 		});
-		const stream = await fetchBilibiliAudioStream({
-			aid: 1,
-			bvid: "BV1test",
-			cid: 2,
-		});
-		expect(stream.url).toBe("https://upos.example/64k.m4s");
-		expect(stream.bitrateBps).toBe(64000);
+			const stream = await fetchBilibiliAudioStream({
+				aid: 1,
+				bvid: "BV1test",
+				cid: 2,
+			});
+			expect(stream.url).toBe("https://upos.example/64k.m4s");
+			expect(stream.bitrateBps).toBe(64000);
+			expect(stream.urls).toEqual(["https://upos.example/64k.m4s"]);
 		const call = sendMessage.mock.calls.find(
 			([m]: any[]) => m.action === "fetchBilibiliJsonWithCookies",
 		) as any[];

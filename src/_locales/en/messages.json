@@ -74,7 +74,10 @@
 	"transcribePanelButton": {
 		"message": "Transcribe with AI"
 	},
-	"transcribePanelRunning": {
+		"transcribePanelStarting": {
+		"message": "Starting…"
+	},
+"transcribePanelRunning": {
 		"message": "Transcribing $1/$2 chunks…"
 	},
 	"transcribePanelDone": {

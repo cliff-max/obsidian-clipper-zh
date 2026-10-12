@@ -21,6 +21,10 @@ import {
 	fetchBilibiliRangeDirect,
 	isAllowedBilibiliFetchUrl,
 } from "./background-bilibili-fetch";
+import {
+	fetchDouyinCaptionDirect,
+	fetchDouyinFeedApiDirect,
+} from "./background-douyin-fetch";
 
 const bgLogger = createLogger("Background");
 
@@ -56,6 +60,36 @@ function fetchBilibiliJsonViaMainWorld(
 		})
 		.then((results) => {
 			return results?.[0]?.result;
+		});
+}
+
+/**
+ * 读取抖音页面 MAIN world 桥缓存的数据（页面自身已签名的 aweme 接口响应）。
+ * 桥由 content script 在 douyin.com 页面注入（douyin-bridge.js）。
+ */
+function fetchDouyinBridgeData(
+	tabId: number,
+	awemeId?: string,
+): Promise<any | null> {
+	return chrome.scripting
+		.executeScript({
+			target: { tabId },
+			world: "MAIN",
+			func: (awemeId: string | undefined) => {
+				const bridge = (window as any).__ocClipperDyBridge;
+				if (!bridge?.byId) return null;
+				if (awemeId) {
+					return bridge.byId[awemeId]?.aweme ?? null;
+				}
+				const entries = Object.values<any>(bridge.byId).sort(
+					(a, b) => b.ts - a.ts,
+				);
+				return entries[0]?.aweme ?? null;
+			},
+			args: [awemeId],
+		})
+		.then((results) => {
+			return results?.[0]?.result ?? null;
 		});
 }
 
@@ -528,7 +562,12 @@ browser.runtime.onMessage.addListener(
 				return true;
 			}
 
-			if (typedRequest.action === "startBilibiliTranscribe") {
+			if (
+				typedRequest.action === "startBilibiliTranscribe" ||
+				typedRequest.action === "startDouyinTranscribe"
+			) {
+				const isDouyin =
+					typedRequest.action === "startDouyinTranscribe";
 				const transcribeRequest = typedRequest as {
 					action: string;
 					bvid?: string;
@@ -536,6 +575,7 @@ browser.runtime.onMessage.addListener(
 					cid?: number;
 					page?: number;
 					durationSec?: number;
+					awemeId?: string;
 				};
 				// 转写是分钟级长任务：先同步校验并立即应答（消息通道撑不了几分钟），
 				// 任务本身 fire-and-forget，进度经状态轮询、结果经通知送达。
@@ -553,15 +593,25 @@ browser.runtime.onMessage.addListener(
 					}
 					sendResponse({ success: true, started: true });
 					// cid 未知时由编排层自行经 view API 解析（含多 P 按 page 匹配）
-					await startTranscribeTask({
-						bvid: transcribeRequest.bvid || "",
-						aid: transcribeRequest.aid ?? 0,
-						cid: transcribeRequest.cid ?? 0,
-						page: transcribeRequest.page ?? 1,
-						durationSec: transcribeRequest.durationSec ?? 0,
-						tabId: sender.tab?.id ?? -1,
-						settings: transcribeSettings,
-					}).catch((error) => {
+					await startTranscribeTask(
+						isDouyin
+							? {
+									platform: "douyin",
+									awemeId: transcribeRequest.awemeId || "",
+									tabId: sender.tab?.id ?? -1,
+									settings: transcribeSettings,
+								}
+							: {
+									platform: "bilibili",
+									bvid: transcribeRequest.bvid || "",
+									aid: transcribeRequest.aid ?? 0,
+									cid: transcribeRequest.cid ?? 0,
+									page: transcribeRequest.page ?? 1,
+									durationSec: transcribeRequest.durationSec ?? 0,
+									tabId: sender.tab?.id ?? -1,
+									settings: transcribeSettings,
+								},
+					).catch((error) => {
 						bgLogger.warn("Transcribe task crashed", {
 							error: String(error),
 						});
@@ -576,27 +626,99 @@ browser.runtime.onMessage.addListener(
 				return true;
 			}
 
-			if (typedRequest.action === "getBilibiliTranscribeStatus") {
+			if (typedRequest.action === "getTranscribeStatus") {
 				const statusRequest = typedRequest as {
 					action: string;
-					bvid?: string;
-					cid?: number;
+					targetKey?: string;
 				};
-				getTranscribeTaskStatus(
-					statusRequest.bvid || "",
-					statusRequest.cid ?? 0,
-				)
+				getTranscribeTaskStatus(statusRequest.targetKey || "")
 					.then((state) => {
 						sendResponse(
 							state
 								? {
 										success: true,
 										status: state.status,
-										completedChunks: state.completedChunks,
-										totalChunks: state.totalChunks,
+										completedChunks: state.completedSlices,
+										totalChunks: state.totalSlices,
+										// init 期间（chunkPlan 未就绪）浮层显示"启动中"
+										starting: !state.chunkPlan?.length,
 									}
 								: { success: true, status: null },
 						);
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						});
+					});
+				return true;
+			}
+
+			if (
+				typedRequest.action === "fetchDouyinCaption" &&
+				typedRequest.url
+			) {
+				fetchDouyinCaptionDirect(typedRequest.url)
+					.then((text) => {
+						sendResponse({ success: true, text });
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						});
+					});
+				return true;
+			}
+
+			if (typedRequest.action === "fetchDouyinFeedApi") {
+				const feedRequest = typedRequest as {
+					action: string;
+					awemeId?: string;
+				};
+				if (!feedRequest.awemeId) {
+					sendResponse({
+						success: false,
+						error: "Missing awemeId",
+					});
+					return true;
+				}
+				fetchDouyinFeedApiDirect(feedRequest.awemeId)
+					.then((data) => {
+						sendResponse({ success: true, data });
+					})
+					.catch((error) => {
+						sendResponse({
+							success: false,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						});
+					});
+				return true;
+			}
+
+			if (typedRequest.action === "fetchDouyinBridgeData") {
+				const bridgeRequest = typedRequest as {
+					action: string;
+					awemeId?: string;
+				};
+				const tabId = sender.tab?.id;
+				if (!tabId) {
+					sendResponse({ success: false, error: "No tab ID" });
+					return true;
+				}
+				fetchDouyinBridgeData(tabId, bridgeRequest.awemeId)
+					.then((aweme) => {
+						sendResponse({ success: true, aweme: aweme ?? null });
 					})
 					.catch((error) => {
 						sendResponse({
@@ -1629,7 +1751,11 @@ browser.runtime.onMessage.addListener(
 				typedRequest.action === "fetchBilibiliJsonWithCookies" ||
 				typedRequest.action === "fetchBilibiliRange" ||
 				typedRequest.action === "startBilibiliTranscribe" ||
-				typedRequest.action === "getBilibiliTranscribeStatus" ||
+				typedRequest.action === "startDouyinTranscribe" ||
+				typedRequest.action === "getTranscribeStatus" ||
+				typedRequest.action === "fetchDouyinCaption" ||
+				typedRequest.action === "fetchDouyinFeedApi" ||
+				typedRequest.action === "fetchDouyinBridgeData" ||
 				typedRequest.action === "fetchFeishuApi" ||
 				typedRequest.action === "fetchFeishuImage"
 			) {

@@ -46,7 +46,8 @@ module.exports = (env, argv) => {
 			style: './src/style.scss',
 			highlighter: './src/highlighter.scss',
 			reader: './src/reader.scss',
-			'reader-script': './src/reader-script.ts'
+			'reader-script': './src/reader-script.ts',
+			'douyin-bridge': './src/douyin-bridge.ts'
 		},
 		output: {
 			path: path.resolve(__dirname, outputDir),

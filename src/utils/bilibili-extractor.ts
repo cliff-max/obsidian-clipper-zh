@@ -325,11 +325,22 @@ export async function extractBilibiliStructuredContent(
 		viewUrl.searchParams.set("aid", String(parsedUrl.aid));
 	}
 
-	const viewResponse = await fetchBilibiliJson(viewUrl.toString());
+	let viewResponse: any;
+	try {
+		viewResponse = await fetchBilibiliJson(viewUrl.toString());
+	} catch (error) {
+		// view 接口失败（多为风控限流）：返回 meta 兜底而非 null——null 会让
+		// content.ts 回退 defuddle 解析整页，推荐区/评论区将混入剪藏主体。
+		logger.warn("View API request failed", {
+			url: viewUrl.toString(),
+			error: String(error),
+		});
+		return buildBilibiliFallbackContent(doc, parsedUrl);
+	}
 	const viewData = viewResponse?.data as BilibiliViewData | undefined;
 	if (!viewData) {
 		logger.warn("View API returned no data", { url: viewUrl.toString() });
-		return null;
+		return buildBilibiliFallbackContent(doc, parsedUrl);
 	}
 
 	const resolvedPage = resolveBilibiliPage(viewData, parsedUrl.page);
@@ -390,24 +401,42 @@ export async function extractBilibiliStructuredContent(
 	);
 	// 无可信字幕轨时回退 AI 转写缓存（由 background 转写任务生成）
 	let finalNotice = subtitleNotice;
+	let cachedHasFailures = false;
 	if (!transcript.length) {
 		const cached = await readCachedTranscript(
 			viewData.bvid || parsedUrl.bvid || "",
 			resolvedPage.cid,
 		);
-		if (cached?.chunks?.length) {
-			// ASR 块无句级时间戳：按句切分，时间戳在块内按文本长度线性插值
+		if (cached?.segments?.length) {
+			// v2：~30s 细块，块起点为真实解码时长累计出的时间锚
+			transcript = cached.segments.flatMap((segment) =>
+				splitTextIntoCues(
+					segment.text,
+					segment.startSec,
+					segment.durationSec || 30,
+				),
+			);
+			cachedHasFailures = cached.segments.some((segment) =>
+				segment.text.includes("转写失败"),
+			);
+			finalNotice = `以下内容由 AI 语音转写生成（模型 ${cached.model}），可能存在识别误差`;
+		} else if (cached?.chunks?.length) {
+			// v1 旧缓存兼容：粗块内按 5 分钟线性插值
 			transcript = cached.chunks.flatMap((chunk) =>
 				splitChunkIntoCues(chunk.text, chunk.startSec),
+			);
+			cachedHasFailures = cached.chunks.some((chunk) =>
+				chunk.text.includes("转写失败"),
 			);
 			finalNotice = `以下内容由 AI 语音转写生成（模型 ${cached.model}），可能存在识别误差`;
 		}
 	}
-	// 维护"需 AI 转写"标记：确认无字幕且无缓存时置位，供页面浮层决定显隐
+	// 维护"需 AI 转写"标记：确认无字幕且无缓存时置位，供页面浮层决定显隐；
+	// 缓存为半成品（含失败占位段）时同样置位——浮层按钮重现，点击可补齐失败片段
 	await markTranscribeNeed(
 		viewData.bvid || parsedUrl.bvid || "",
 		resolvedPage.cid,
-		transcript.length === 0 && subtitleStable,
+		(transcript.length === 0 || cachedHasFailures) && subtitleStable,
 	);
 	const transcriptText = transcript.map((cue) => cue.content).join("\n");
 	const transcriptMarkdown = buildBilibiliTranscriptMarkdown(
@@ -472,8 +501,12 @@ export async function extractBilibiliStructuredContent(
 }
 
 interface CachedTranscript {
+	schemaVersion?: number;
 	model: string;
-	chunks: Array<{ startSec: number; text: string }>;
+	/** v1：~5 分钟粗块，无块时长 */
+	chunks?: Array<{ startSec: number; text: string }>;
+	/** v2：~30s 细块（真实时间锚 + 块时长） */
+	segments?: Array<{ startSec: number; durationSec: number; text: string }>;
 	createdAt: number;
 }
 
@@ -483,12 +516,13 @@ export function transcriptCacheKey(bvid: string, cid: number): string {
 }
 
 /**
- * 把 ASR 块文本按句切分为多条 cue，时间戳按字符占比在块内线性插值
- * （ASR 无句级时间轴，插值仅为近似定位）。
+ * 把 ASR 段文本按句切分为多条 cue，时间戳按字符占比在段内线性插值
+ * （v2 段为 ~30s 细块，插值误差可控；ASR 无句级时间轴，插值仅为近似定位）。
  */
-export function splitChunkIntoCues(
+export function splitTextIntoCues(
 	text: string,
-	chunkStartSec: number,
+	startSec: number,
+	durationSec: number,
 ): BilibiliTranscriptCue[] {
 	const sentences =
 		text
@@ -498,14 +532,22 @@ export function splitChunkIntoCues(
 			.filter(Boolean) || [];
 	if (!sentences.length) return [];
 	const totalChars = sentences.reduce((n, s) => n + s.length, 0);
+	if (!totalChars) return [];
 	let consumed = 0;
-	const totalSec = 5 * 60; // 块时长（CHUNK_TARGET_BYTES 恒定码率对应 5 分钟）
 	return sentences.map((sentence) => {
-		const from = chunkStartSec + (consumed / totalChars) * totalSec;
+		const from = startSec + (consumed / totalChars) * durationSec;
 		consumed += sentence.length;
-		const to = chunkStartSec + (consumed / totalChars) * totalSec;
+		const to = startSec + (consumed / totalChars) * durationSec;
 		return { from, to, content: sentence };
 	});
+}
+
+/** v1 旧缓存的兼容入口：块时长恒按 5 分钟（CHUNK_TARGET_BYTES 码率对应）。 */
+export function splitChunkIntoCues(
+	text: string,
+	chunkStartSec: number,
+): BilibiliTranscriptCue[] {
+	return splitTextIntoCues(text, chunkStartSec, 5 * 60);
 }
 
 /** "需 AI 转写"标记的存储键前缀（剪藏确认无字幕后写入，浮层据此显隐）。 */
@@ -979,6 +1021,55 @@ function groupTranscriptByChapters(
 function readMetaContent(doc: Document, selector: string): string {
 	const element = doc.querySelector(selector) as HTMLMetaElement | null;
 	return element?.content?.trim() || "";
+}
+
+/**
+ * view 接口不可用时的最小兜底：仅用页面 meta/DOM 数据组装结构化内容，
+ * 字幕区给出可读说明。保证 B 站 URL 下剪藏主体永不回退到 defuddle 全页解析
+ * （推荐流、评论流会混入主体），代价是本次丢掉简介/章节/字幕。
+ */
+function buildBilibiliFallbackContent(
+	doc: Document,
+	parsedUrl: BilibiliParsedUrl,
+): BilibiliStructuredContent {
+	const title =
+		readMetaContent(doc, 'meta[property="og:title"]') || doc.title || "";
+	const description =
+		readMetaContent(doc, 'meta[name="description"]') ||
+		readMetaContent(doc, 'meta[property="og:description"]') ||
+		"";
+	const image = readMetaContent(doc, 'meta[property="og:image"]') || "";
+	const author =
+		readTextContent(doc, ".up-name") ||
+		readTextContent(doc, "[data-user-name]") ||
+		"";
+	const notice =
+		"未获取到字幕：B 站接口本次请求受限（可能为风控限流），稍后重新剪藏即可恢复；本次简介与章节内容暂缺";
+	const structuredHtml = buildBilibiliStructuredHtml({
+		description,
+		chapters: [],
+		transcript: [],
+		subtitleNotice: notice,
+	});
+	return {
+		title,
+		author,
+		description,
+		published: "",
+		image,
+		bvid: parsedUrl.bvid || "",
+		aid: parsedUrl.aid,
+		cid: 0,
+		page: parsedUrl.page,
+		chapters: [],
+		transcript: [],
+		subtitleNotice: notice,
+		transcriptText: "",
+		transcriptMarkdown: "",
+		chaptersMarkdown: "",
+		structuredHtml,
+		wordCount: description.split(/\s+/).filter(Boolean).length,
+	};
 }
 
 function readTextContent(doc: Document, selector: string): string {

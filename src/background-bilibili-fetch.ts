@@ -67,6 +67,54 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * 经 DNR 临时规则为该 URL 注入指定请求头后执行 fetch（用后即删）。
+ * 用于补齐 SW fetch 与页面同源请求的头差异（Cookie / Origin 等——均为
+ * fetch 的禁设头，只能走 DNR）。
+ */
+async function withBilibiliHeaderRule<T>(
+	url: string,
+	requestHeaders: Array<{ header: string; value: string }>,
+	doFetch: () => Promise<T>,
+): Promise<T> {
+	const dnr = (globalThis as any).chrome?.declarativeNetRequest;
+	if (!dnr?.updateSessionRules) {
+		return doFetch();
+	}
+	const ruleId =
+		BILIBILI_COOKIE_RULE_BASE +
+		((nextBilibiliCookieRuleId++ - BILIBILI_COOKIE_RULE_BASE) %
+			BILIBILI_COOKIE_RULE_WINDOW);
+	await dnr.updateSessionRules({
+		removeRuleIds: [ruleId],
+		addRules: [
+			{
+				id: ruleId,
+				priority: 1,
+				action: {
+					type: "modifyHeaders" as any,
+					requestHeaders: requestHeaders.map((entry) => ({
+						header: entry.header,
+						operation: "set" as any,
+						value: entry.value,
+					})),
+				},
+				condition: {
+					regexFilter: `^${escapeRegExp(url)}$`,
+					resourceTypes: ["xmlhttprequest" as any],
+				},
+			},
+		],
+	});
+	try {
+		return await doFetch();
+	} finally {
+		dnr.updateSessionRules({ removeRuleIds: [ruleId] }).catch(() => {
+			// 清理失败不影响主流程，规则窗口循环复用会覆盖旧规则
+		});
+	}
+}
+
 export async function fetchBilibiliJsonWithCookiesDirect(
 	url: string,
 ): Promise<any> {
@@ -93,60 +141,26 @@ export async function fetchBilibiliJsonWithCookiesDirect(
 		.map((cookie) => `${cookie.name}=${cookie.value}`)
 		.join("; ");
 
-	const ruleId =
-		BILIBILI_COOKIE_RULE_BASE +
-		((nextBilibiliCookieRuleId++ - BILIBILI_COOKIE_RULE_BASE) %
-			BILIBILI_COOKIE_RULE_WINDOW);
-	await (globalThis as any).chrome.declarativeNetRequest.updateSessionRules({
-		removeRuleIds: [ruleId],
-		addRules: [
-			{
-				id: ruleId,
-				priority: 1,
-				action: {
-					type: "modifyHeaders" as any,
-					requestHeaders: [
-						{
-							header: "Cookie",
-							operation: "set" as any,
-							value: cookieHeader,
-						},
-						{
-							header: "Referer",
-							operation: "set" as any,
-							value: "https://www.bilibili.com/",
-						},
-					],
-				},
-				condition: {
-					regexFilter: `^${escapeRegExp(url)}$`,
-					resourceTypes: ["xmlhttprequest" as any],
-				},
-			},
+	return withBilibiliHeaderRule(
+		url,
+		[
+			{ header: "Cookie", value: cookieHeader },
+			{ header: "Referer", value: "https://www.bilibili.com/" },
 		],
-	});
-
-	try {
-		const response = await fetch(url, {
-			method: "GET",
-			credentials: "omit",
-			cache: "no-store",
-		});
-		if (!response.ok) {
-			throw new Error(
-				`Bilibili fetch failed with status ${response.status}`,
-			);
-		}
-		return await response.json();
-	} finally {
-		(globalThis as any).chrome.declarativeNetRequest
-			.updateSessionRules({
-				removeRuleIds: [ruleId],
-			})
-			.catch(() => {
-				// 清理失败不影响主流程，规则窗口循环复用会覆盖旧规则
+		async () => {
+			const response = await fetch(url, {
+				method: "GET",
+				credentials: "omit",
+				cache: "no-store",
 			});
-	}
+			if (!response.ok) {
+				throw new Error(
+					`Bilibili fetch failed with status ${response.status}`,
+				);
+			}
+			return await response.json();
+		},
+	);
 }
 
 /**
@@ -164,18 +178,45 @@ export async function fetchBilibiliRangeDirect(
 	if (!opts?.skipAllowList && !isAllowedBilibiliFetchUrl(url)) {
 		throw blockedError(url);
 	}
-	const response = await fetch(url, {
-		method: "GET",
-		cache: "no-store",
-		headers: {
-			Referer: "https://www.bilibili.com/",
-			Range: `bytes=${rangeStart}-${rangeEnd}`,
-		},
-	});
-	if (!response.ok && response.status !== 206) {
-		throw new Error(
-			`Bilibili range fetch failed with status ${response.status}`,
+	const readResponse = async (): Promise<ArrayBuffer> => {
+		const response = await fetch(url, {
+			method: "GET",
+			cache: "no-store",
+			headers: {
+				Referer: "https://www.bilibili.com/",
+				Range: `bytes=${rangeStart}-${rangeEnd}`,
+			},
+		});
+		if (!response.ok && response.status !== 206) {
+			throw new Error(
+				`Bilibili range fetch failed with status ${response.status}`,
+			);
+		}
+		const buffer = await response.arrayBuffer();
+		// 对端忽略 Range 返回 200 全量时截取所需区间：否则 init+整段拼出的
+		// 块超出计划长度，页面解码直接 EncodingError
+		if (response.status === 200 && rangeEnd >= rangeStart) {
+			return buffer.slice(
+				rangeStart,
+				Math.min(rangeEnd + 1, buffer.byteLength),
+			);
+		}
+		return buffer;
+	};
+	try {
+		return await readResponse();
+	} catch (error) {
+		// 403 且仅 403：部分受保护内容校验 Origin（页面同源媒体请求带
+		// Origin，扩展 SW 不带，且 Origin 是 fetch 禁设头）——经 DNR 注入
+		// Origin+Referer 重试一次。仍 403 则为权益/风控边界，向上抛出。
+		if (!/status 403/.test(String(error))) throw error;
+		return withBilibiliHeaderRule(
+			url,
+			[
+				{ header: "Origin", value: "https://www.bilibili.com" },
+				{ header: "Referer", value: "https://www.bilibili.com/" },
+			],
+			readResponse,
 		);
 	}
-	return await response.arrayBuffer();
 }

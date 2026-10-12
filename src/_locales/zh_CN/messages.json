@@ -74,7 +74,10 @@
 	"transcribePanelButton": {
 		"message": "AI 转写字幕"
 	},
-	"transcribePanelRunning": {
+		"transcribePanelStarting": {
+		"message": "转写启动中…"
+	},
+"transcribePanelRunning": {
 		"message": "转写中 $1/$2 块…"
 	},
 	"transcribePanelDone": {

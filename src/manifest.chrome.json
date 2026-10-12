@@ -4,7 +4,7 @@
 	"name": "obsidian-clipper-zh",
 	"key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzLc6HNkPl422OUD6qIrmnCBASPO0IzgIkLzP9xRncTiYx4ajVTUrHoIse45o7N5bYHkl3x9JV8uUgCVmC0ut59m6A7ytlNh7HY08007oi+sK1t9xqjlmOjAOd23y6s3umE37SskX1qQCgcnJtW9dN/jEc6hr5D+5T7kFsio2tkBckMUnn+Qnc4XysT81ZL0fFSscuJcWZmeHq5gYBuNnffXtpFeqgY1Nu7QuDH2OZetTYM2wVcoHd5jyo5VXiTU/H6anCd+SB6/Hwdcmf654KwLYroVBwckeGgdRbgDa4ub/AuXFJWhajDtPuq6qFssxeviigU1UVjXDuZq1kwCoHQIDAQAB",
 	"homepage_url": "https://github.com/cliff-max/obsidian-clipper-zh",
-	"version": "1.5.0",
+	"version": "1.6.0",
 	"description": "Save and highlight web pages for Obsidian, with enhanced support for Chinese platforms (Bilibili, WeChat, Feishu) and bilingual YouTube transcripts.",
 	"permissions": [
 		"activeTab",
@@ -18,7 +18,11 @@
 		"declarativeNetRequest",
 		"cookies"
 	],
-	"host_permissions": ["<all_urls>", "http://*/*", "https://*/*"],
+	"host_permissions": [
+		"<all_urls>",
+		"http://*/*",
+		"https://*/*"
+	],
 	"action": {
 		"default_popup": "popup.html"
 	},
@@ -39,8 +43,25 @@
 	},
 	"content_scripts": [
 		{
-			"matches": ["http://*/*", "https://*/*"],
-			"js": ["browser-polyfill.min.js", "content.js"]
+			"matches": [
+				"http://*/*",
+				"https://*/*"
+			],
+			"js": [
+				"browser-polyfill.min.js",
+				"content.js"
+			]
+		},
+		{
+			"matches": [
+				"https://www.douyin.com/*",
+				"https://*.douyin.com/*"
+			],
+			"js": [
+				"douyin-bridge.js"
+			],
+			"run_at": "document_start",
+			"world": "MAIN"
 		}
 	],
 	"web_accessible_resources": [
@@ -52,10 +73,15 @@
 				"style.css",
 				"side-panel.html",
 				"flatten-shadow-dom.js",
+				"douyin-bridge.js",
 				"highlighter.css"
 			],
-			"extension_ids": ["*"],
-			"matches": ["*://*/*"]
+			"extension_ids": [
+				"*"
+			],
+			"matches": [
+				"*://*/*"
+			]
 		}
 	],
 	"content_security_policy": {

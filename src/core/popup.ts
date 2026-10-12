@@ -1437,6 +1437,12 @@ async function handleClipObsidian(): Promise<void> {
 
 		if (!isSidePanel) {
 			setTimeout(() => window.close(), 500);
+		} else if (urlParams.get('context') === 'iframe') {
+			// 页内嵌入式侧栏：保存成功后自动收起——完整笔记内容留在侧栏
+			// 会长时间遮挡页面（实测反馈：剪藏完成后的提示过长影响观感）
+			setTimeout(() => {
+				void browser.runtime.sendMessage({ action: 'close-iframe' });
+			}, 800);
 		}
 	} catch (error) {
 		console.error('Error in handleClipObsidian:', error);
